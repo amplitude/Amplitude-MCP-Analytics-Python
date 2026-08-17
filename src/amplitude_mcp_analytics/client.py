@@ -123,8 +123,8 @@ class AmplitudeMCPAnalytics:
             except ImportError as err:
                 raise ConfigurationError(
                     "amplitude-analytics is required for the api_key path. Install it "
-                    "as a dependency: uv add amplitude-analytics (or pass a "
-                    "pre-initialized client via the 'amplitude' option)."
+                    "via the extra: uv add 'amplitude-mcp-analytics[amplitude]' (or "
+                    "pass a pre-initialized client via the 'amplitude' option)."
                 ) from err
             raw_amplitude = amplitude_module.Amplitude(api_key)
             self._owns_client = True
