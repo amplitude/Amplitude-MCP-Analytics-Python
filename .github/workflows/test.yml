@@ -1,0 +1,93 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # uv is installed from PyPI via the runner's Python (no third-party
+      # setup action); uv then provisions the matrix interpreter itself.
+      - name: Install uv
+        run: python3 -m pip install --quiet uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --python ${{ matrix.python-version }}
+
+      - name: Type check
+        run: uv run pyright src
+
+      - name: Test with coverage
+        run: uv run pytest --cov=amplitude_mcp_analytics --cov-report=term --cov-report=xml -q
+
+  # The SDK integrates by wrapping the mcp package's server internals
+  # (Server.run, request_handlers, request_ctx, FastMCP's tool manager), so a
+  # new mcp release can silently change behavior the unit tests mock around.
+  # This job runs the full suite against the oldest supported SDK and the
+  # newest 1.x to catch that drift. mcp 2.x is intentionally unsupported (the
+  # adapter raises a ConfigurationError) — see core/mcp.py.
+  sdk-compat:
+    name: mcp SDK compat (${{ matrix.mcp-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mcp-version: ["1.16.0", "latest-1.x"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        run: python3 -m pip install --quiet uv
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Override mcp version
+        run: |
+          if [ "${{ matrix.mcp-version }}" = "latest-1.x" ]; then
+            uv pip install --upgrade "mcp>=1.16,<2"
+          else
+            uv pip install "mcp==${{ matrix.mcp-version }}"
+          fi
+
+      # Verify the override actually took — a resolver fallback that silently
+      # reinstalled the locked version would make this whole job a no-op.
+      - name: Verify override
+        run: |
+          INSTALLED=$(uv run --no-sync python -c "import importlib.metadata; print(importlib.metadata.version('mcp'))")
+          echo "installed mcp==${INSTALLED}"
+          if [ "${{ matrix.mcp-version }}" != "latest-1.x" ] && [ "$INSTALLED" != "${{ matrix.mcp-version }}" ]; then
+            echo "override did not take (wanted ${{ matrix.mcp-version }})" >&2
+            exit 1
+          fi
+          case "$INSTALLED" in
+            2.*) echo "unexpected mcp 2.x in the 1.x compat job" >&2; exit 1 ;;
+          esac
+
+      - name: Test
+        run: uv run --no-sync pytest -q
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        run: python3 -m pip install --quiet uv
+
+      - name: Ruff
+        run: uv run --frozen ruff check src tests
