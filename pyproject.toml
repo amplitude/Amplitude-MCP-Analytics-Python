@@ -71,7 +71,7 @@ ignore = [
 ]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src"]
 typeCheckingMode = "strict"
 reportPrivateUsage = false
 reportUnknownMemberType = false
