@@ -13,14 +13,17 @@ from typing import Any, Protocol, TypedDict, runtime_checkable
 __all__ = ["AmplitudeClientLike", "AmplitudeEvent"]
 
 
-class AmplitudeEvent(TypedDict, total=False):
+class _AmplitudeEventRequired(TypedDict):
+    event_type: str
+
+
+class AmplitudeEvent(_AmplitudeEventRequired, total=False):
     """Event payload handed to :meth:`AmplitudeClientLike.track`.
 
     ``event_type`` is always present; the rest mirror the Amplitude HTTP API /
     ``BaseEvent`` fields the SDK populates.
     """
 
-    event_type: str
     user_id: str
     device_id: str
     event_properties: dict[str, Any]
