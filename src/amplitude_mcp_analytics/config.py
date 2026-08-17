@@ -10,6 +10,7 @@ __all__ = [
     "AutocaptureConfig",
     "ErrorMessageSanitizer",
     "MCPAnalyticsConfig",
+    "RationaleSanitizer",
     "ResolvedAutocapture",
 ]
 
@@ -55,6 +56,21 @@ Applied to every event that carries the property: ``[MCP] Tools Listed``,
 A sanitizer that raises is treated as ``None``. It fails **closed** — the raw
 message is never used as a fallback, since a sanitizer exists precisely to keep
 that value out of the event stream.
+"""
+
+RationaleSanitizer = Callable[[str], str | None]
+"""Rewrites the ``[MCP] Rationale`` property before it is emitted.
+
+Receives the rationale the host passed to ``set_rationale`` — LLM-generated free
+text about why a tool was called, which can quote the end user's prompt. Return
+a replacement string, or ``None`` to omit the property entirely.
+
+Applied wherever the property is lowered: the default ``[MCP] Tool Call
+Response`` event and every tool-scope custom event of the same invocation.
+
+Same fail-closed contract as :data:`ErrorMessageSanitizer` — a sanitizer that
+raises, or returns a non-string, omits the property rather than falling back to
+the raw text.
 """
 
 
@@ -120,6 +136,7 @@ class MCPAnalyticsConfig:
         autocapture: bool | AutocaptureConfig | None = None,
         emit_anonymous_event: bool = False,
         sanitize_error_message: ErrorMessageSanitizer | None = None,
+        sanitize_rationale: RationaleSanitizer | None = None,
     ) -> None:
         #: Emit verbose internal logging. Default ``False``.
         self.debug = debug
@@ -139,4 +156,10 @@ class MCPAnalyticsConfig:
         #: ``None``, the message is sent as-is (the v0 default).
         self.sanitize_error_message = (
             sanitize_error_message if callable(sanitize_error_message) else None
+        )
+        #: Rewrite or drop ``[MCP] Rationale`` before it is emitted. Left
+        #: ``None``, the host-supplied rationale is sent as-is (the v0 default —
+        #: configuring this changes nothing on the wire until you do).
+        self.sanitize_rationale = (
+            sanitize_rationale if callable(sanitize_rationale) else None
         )

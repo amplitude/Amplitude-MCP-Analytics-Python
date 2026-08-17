@@ -12,6 +12,7 @@ its dispatch around ``inspect.iscoroutinefunction``."""
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any
 
 import anyio
@@ -26,7 +27,7 @@ from amplitude_mcp_analytics import (
     set_identity,
 )
 from amplitude_mcp_analytics.testing import MockAmplitudeMCPAnalytics
-from conftest import ListLogger, server_ctx, tenant
+from conftest import server_ctx, tenant
 
 RESPONSE = "[MCP] Tool Call Response"
 
@@ -433,16 +434,12 @@ async def test_unbound_wrapper_is_a_true_noop_passthrough() -> None:
 
 
 @pytest.mark.anyio
-async def test_unbound_wrapper_warns_once_per_tool_not_per_call() -> None:
-    logger = ListLogger()
+async def test_unbound_wrapper_warns_once_per_tool_not_per_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
 
-    class RawWithLogger:
-        """Structural Amplitude client exposing configuration.logger, which
-        get_logger prefers over the stdlib module logger."""
-
-        def __init__(self) -> None:
-            self.configuration = type("Cfg", (), {"logger": logger})()
-
+    class RawClient:
         def track(self, event: dict[str, Any]) -> None:
             pass
 
@@ -450,7 +447,7 @@ async def test_unbound_wrapper_warns_once_per_tool_not_per_call() -> None:
             return []
 
     analytics = AmplitudeMCPAnalytics(
-        amplitude=RawWithLogger(), server_name="my-server", server_version="1.0.0"
+        amplitude=RawClient(), server_name="my-server", server_version="1.0.0"
     )
 
     async def handler() -> dict[str, Any]:
@@ -461,13 +458,14 @@ async def test_unbound_wrapper_warns_once_per_tool_not_per_call() -> None:
 
     await first()
     await first()
-    assert len(logger.warnings) == 1  # once, not per call
-    assert "instrument_tool('search_docs') ran without" in logger.warnings[0]
-    assert "instrument_server" in logger.warnings[0]
+    assert len(caplog.records) == 1  # once, not per call
+    warning = caplog.records[0].getMessage()
+    assert "instrument_tool('search_docs') ran without" in warning
+    assert "instrument_server" in warning
 
     await second()
     await second()
-    assert len(logger.warnings) == 2  # per tool, not global
+    assert len(caplog.records) == 2  # per tool, not global
 
 
 @pytest.mark.anyio

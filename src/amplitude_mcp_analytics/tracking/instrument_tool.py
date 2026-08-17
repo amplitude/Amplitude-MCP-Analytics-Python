@@ -142,7 +142,7 @@ def instrument_tool(
         if server_ctx is None:
             if not warned_unbound:
                 warned_unbound = True
-                get_logger(deps.amplitude).warning(
+                get_logger().warning(
                     "AmplitudeMCPAnalytics: instrument_tool('%s') ran without "
                     "instrument_server(); analytics is disabled for this tool. Call "
                     "instrument_server(server) before running it to enable tracking.",

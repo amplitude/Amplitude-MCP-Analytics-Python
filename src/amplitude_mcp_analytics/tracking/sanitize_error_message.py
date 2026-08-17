@@ -1,39 +1,49 @@
-"""Applies the configured ``ErrorMessageSanitizer`` to ``[MCP] Error Message``.
+"""The fail-closed sanitizer helper, and the ``[MCP] Error Message`` binding of it.
 
-Every event that carries the property routes its value through here, so a
-consumer's sanitizer cannot be bypassed by whichever code path happens to be
-emitting — see the ``sanitize_error_message`` config option.
+Every event property that routes a caller- or model-supplied string through a
+consumer-configured sanitizer goes through :func:`apply_sanitizer`, so a
+sanitizer cannot be bypassed by whichever code path happens to be emitting —
+see the ``sanitize_error_message`` and ``sanitize_rationale`` config options.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..config import ErrorMessageSanitizer
 
-__all__ = ["sanitize_error_message"]
+__all__ = ["apply_sanitizer", "sanitize_error_message"]
+
+
+def apply_sanitizer(value: str, sanitize: Callable[[str], str | None] | None) -> str | None:
+    """Resolve the value to emit for a sanitized property, or ``None`` to omit
+    the property.
+
+    With no sanitizer configured the value passes through unchanged (the v0
+    default for every property using this helper). Otherwise the property is
+    omitted whenever the sanitizer declines to produce a string — an explicit
+    ``None``, a non-string return, or a raise.
+
+    Raising **fails closed** rather than falling back to ``value``: a sanitizer
+    exists to keep that exact value out of the event stream, so a buggy one must
+    not leak what it was installed to scrub. The exception is swallowed to
+    preserve the SDK's best-effort telemetry contract — emitting an event must
+    never break the tool response it describes.
+
+    @internal
+    """
+    if sanitize is None:
+        return value
+    try:
+        sanitized = sanitize(value)
+    except Exception:
+        return None
+    return sanitized if isinstance(sanitized, str) else None
 
 
 def sanitize_error_message(
     message: str, sanitize: ErrorMessageSanitizer | None
 ) -> str | None:
     """Resolve the value to emit for ``[MCP] Error Message``, or ``None`` to
-    omit the property.
-
-    With no sanitizer configured the message passes through unchanged (the v0
-    default). Otherwise the property is omitted whenever the sanitizer declines
-    to produce a string — an explicit ``None``, a non-string return, or a raise.
-
-    Raising **fails closed** rather than falling back to ``message``: a
-    sanitizer exists to keep that exact value out of the event stream, so a
-    buggy one must not leak what it was installed to scrub. The exception is
-    swallowed to preserve the SDK's best-effort telemetry contract — emitting
-    an event must never break the tool response it describes.
-
-    @internal
-    """
-    if sanitize is None:
-        return message
-    try:
-        sanitized = sanitize(message)
-    except Exception:
-        return None
-    return sanitized if isinstance(sanitized, str) else None
+    omit the property. Thin binding of :func:`apply_sanitizer`. @internal"""
+    return apply_sanitizer(message, sanitize)

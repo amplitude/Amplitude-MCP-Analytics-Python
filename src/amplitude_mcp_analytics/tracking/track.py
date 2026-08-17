@@ -66,7 +66,7 @@ def track_server_event(
     try:
         _emit(amplitude, ctx_to_amplitude_fields(ctx), event_name, properties, options)
     except Exception as err:  # noqa: BLE001 — best-effort telemetry, never raises
-        get_logger(amplitude).warning(
+        get_logger().warning(
             "track_server_event('%s') failed: %s", event_name, err
         )
 
@@ -85,6 +85,6 @@ def track_tool_event(
     try:
         _emit(amplitude, ctx_to_amplitude_fields_for_tool(ctx), event_name, properties, options)
     except Exception as err:  # noqa: BLE001 — best-effort telemetry, never raises
-        get_logger(amplitude).warning(
+        get_logger().warning(
             "track_tool_event('%s') failed: %s", event_name, err
         )

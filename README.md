@@ -13,21 +13,13 @@ Amplitude MCP Analytics SDK — Model Context Protocol server usage tracking for
 uv add amplitude-mcp-analytics 'mcp>=1.16,<2'
 ```
 
-The SDK itself has no hard runtime dependencies — your MCP server already
-depends on `mcp`. The supported MCP SDK range is **`mcp>=1.16,<2`**. The `mcp`
-2.x line restructures the server internals; a 2.x server is detected and
-rejected with a clear error rather than silently emitting nothing (2.x support
-is planned).
-
-To construct the client from an API key, the SDK needs the
-`amplitude-analytics` package — install it via the optional extra:
-
-```bash
-uv add 'amplitude-mcp-analytics[amplitude]'
-```
-
-If you already own an Amplitude client, skip the extra and pass the client in
-(see below).
+`amplitude-analytics` comes along as a dependency — nothing else to install
+whichever way you construct the client. `mcp` is listed here because your MCP
+server needs it, not because this SDK depends on it: the coupling is
+duck-typed, so the SDK never pins a range against yours. The supported range is
+**`mcp>=1.16,<2`**. The `mcp` 2.x line restructures the server internals; a 2.x
+server is detected and rejected with a clear error rather than silently emitting
+nothing (2.x support is planned).
 
 > **Agent-assisted setup:** the
 > [`instrument-mcp-server` skill](https://github.com/amplitude/builder-skills/tree/main/engineering-skills/skills/instrument-mcp-server)
@@ -165,7 +157,7 @@ analytics.instrument_server(
 @mcp.tool()
 @analytics.instrument_tool(name="search")
 async def search(query: str) -> str:
-    analytics.set_identity(SetIdentityInput(user_id=my_auth.get_login_id()))
+    analytics.set_identity(user_id=my_auth.get_login_id())
     return await do_work(query)
 
 # 3. Opt-in, derived from the request's auth info (you map the claims).
@@ -178,6 +170,12 @@ async def search(query: str) -> str:
 )
 async def lookup(doc_id: str) -> str: ...
 ```
+
+`set_identity` also accepts a positional `SetIdentityInput` instead of the
+keyword arguments — handy for forwarding a value you already hold, which is
+exactly what a `resolve_identity` callback returns:
+`analytics.set_identity(resolve_identity(auth_info))`. Passing both spellings in
+one call raises `ValueError`.
 
 The `resolve_identity` callback receives the request's auth info as a plain
 dict — the access token the MCP SDK's auth middleware validated (`client_id`,
@@ -280,7 +278,10 @@ typically want `{"session_lifecycle": False, "tools_listed": True}`, since
 their transports close at the end of every request rather than at session end.
 Custom events (below) are unaffected.
 
-### Redacting error messages
+### Redacting free-text properties
+
+Two properties carry text the SDK didn't compose, and each has a hook that
+rewrites or drops it before emission.
 
 `[MCP] Error Message` carries free text the SDK didn't compose — a failing tool's
 own message, or the MCP SDK's input-validation text, which quotes the rejected
@@ -310,6 +311,23 @@ Return `None` to omit the property entirely. A sanitizer that raises fails
 and `[MCP] Error Type` are unaffected, so failures stay segmentable. The text
 sent to the client never changes. See
 [Redacting `[MCP] Error Message`](docs/events.md#redacting-mcp-error-message).
+
+`[MCP] Rationale` is the other free-text property, and `sanitize_rationale` is
+its counterpart — same signature, same fail-closed contract. A rationale is
+model-written prose about why a tool was called, so it can quote the end user's
+prompt verbatim even when every argument your tool receives is clean:
+
+```python
+MCPAnalyticsConfig(
+    sanitize_rationale=lambda rationale: rationale[:120],  # or None to drop it
+)
+```
+
+It applies wherever the property is lowered — the default
+`[MCP] Tool Call Response` event and every tool-scope custom event of the same
+invocation — and, like `sanitize_error_message`, changes nothing on the wire
+until you configure it. The rationale you passed to `set_rationale` is never
+returned to the client either way; this affects telemetry only.
 
 ## Context (`ctx`)
 
@@ -423,16 +441,25 @@ Python-native build tooling (uv, pytest, pyright, ruff) in place of the Node
 stack. The domain model — events, properties, identity, context — is
 MCP-native and intentionally does not reuse agent vocabulary.
 
-### Zero hard dependencies
+### One runtime dependency, and `mcp` is not it
 
-The Node SDK keeps the MCP SDK and the Amplitude client as peer dependencies;
-Python has no peer-dependency concept, so this package ships with **zero hard
-runtime dependencies** instead. Coupling to the `mcp` package is structural
-(duck-typed, confined to one adapter module); `amplitude-analytics` is lazily
-imported only on the `api_key` path and installable via the `[amplitude]`
-extra. The low-level delivery utilities (delivery hooks, serverless flush
-accounting) are ported rather than depended on — no shared package, no version
-coupling at runtime.
+The Node SDK keeps the MCP SDK and the Amplitude client as peer dependencies.
+Python has no peer-dependency concept, so the two peers split:
+
+- **`amplitude-analytics` is a hard dependency.** A *required* peer maps to a
+  plain runtime dep — that is what "you must have this" means in Python. Behind
+  an extra it would instead be a construction-time failure for anyone who
+  missed the extra, which is a worse trade than one small, already-transitive
+  package.
+- **`mcp` is not a dependency at all.** The coupling is structural — duck-typed
+  and confined to one adapter module (`core/mcp.py`) — and every consumer is an
+  MCP server that already depends on `mcp`. Declaring a range here could only
+  fight theirs, so the supported range is documented and asserted at runtime
+  instead of pinned. It is a dev-group dependency for the test suite.
+
+The low-level delivery utilities (delivery hooks, serverless flush accounting)
+are ported rather than depended on — no shared package, no version coupling at
+runtime.
 
 ### Ported from the Node SDK
 

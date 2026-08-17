@@ -229,6 +229,7 @@ def build_server_context(
         auth_type=server_ctx.auth_type,
         extra=server_ctx.extra,
         emit_anonymous_event=server_ctx.emit_anonymous_event,
+        sanitize_rationale=server_ctx.sanitize_rationale,
     )
 
 

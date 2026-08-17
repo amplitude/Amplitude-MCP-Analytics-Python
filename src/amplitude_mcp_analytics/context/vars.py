@@ -22,7 +22,13 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, TypeVar
 
-from .types import McpRequestInfo, McpServerContext, McpToolContext, SetIdentityInput
+from .types import (
+    McpRequestInfo,
+    McpServerContext,
+    McpTenant,
+    McpToolContext,
+    SetIdentityInput,
+)
 
 __all__ = ["get_current_context", "run_with_context", "set_identity", "set_rationale"]
 
@@ -67,8 +73,30 @@ def get_current_context() -> McpServerContext | None:
     return _current_context.get()
 
 
-def set_identity(input: SetIdentityInput) -> None:
+def set_identity(
+    identity: SetIdentityInput | None = None,
+    *,
+    user_id: str | None = None,
+    device_id: str | None = None,
+    tenant: McpTenant | None = None,
+) -> None:
     """Set or override the identity on the current request's ambient context.
+
+    Two spellings, and only one per call:
+
+    - **Keyword arguments** — the everyday spelling::
+
+          set_identity(user_id="alice@example.com")
+          set_identity(user_id="alice", tenant=McpTenant("org id", "42"))
+
+    - **A positional** :class:`SetIdentityInput` — for forwarding a value you
+      already hold, which is what an ``IdentityResolver`` returns::
+
+          set_identity(resolve_identity(auth_info))
+
+    Passing both raises :class:`ValueError`: the two spellings would have to be
+    merged, and silently picking a winner is how identities get set to the wrong
+    subject.
 
     Must be called inside a :func:`run_with_context` scope (e.g. inside an
     instrumented tool handler). Raises :class:`RuntimeError` if called outside
@@ -77,6 +105,16 @@ def set_identity(input: SetIdentityInput) -> None:
     This is the primary integration point for consumers who resolve identity in
     custom auth middleware or inside the handler itself.
     """
+    if identity is not None and (
+        user_id is not None or device_id is not None or tenant is not None
+    ):
+        raise ValueError(
+            "set_identity() takes either a SetIdentityInput or the user_id/device_id/"
+            "tenant keyword arguments, not both."
+        )
+    if identity is None:
+        identity = SetIdentityInput(user_id=user_id, device_id=device_id, tenant=tenant)
+
     ctx = _current_context.get()
     if ctx is None:
         raise RuntimeError(
@@ -84,16 +122,16 @@ def set_identity(input: SetIdentityInput) -> None:
             "Call it inside an instrumented tool handler or a run_with_context() block."
         )
 
-    if input.user_id is not None or input.device_id is not None:
+    if identity.user_id is not None or identity.device_id is not None:
         updates: dict[str, Any] = {"resolved_from": "explicit"}
-        if input.user_id is not None:
-            updates["user_id"] = input.user_id
-        if input.device_id is not None:
-            updates["device_id"] = input.device_id
+        if identity.user_id is not None:
+            updates["user_id"] = identity.user_id
+        if identity.device_id is not None:
+            updates["device_id"] = identity.device_id
         ctx.identity = replace(ctx.identity, **updates)
 
-    if input.tenant is not None:
-        ctx.tenant = input.tenant
+    if identity.tenant is not None:
+        ctx.tenant = identity.tenant
 
 
 def set_rationale(rationale: str) -> None:

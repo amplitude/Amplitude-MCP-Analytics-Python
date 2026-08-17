@@ -5,6 +5,7 @@ sits behind)."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -138,15 +139,16 @@ class TestDeliveryHooksThroughTheClientStack:
         # The event JSON still lands on stderr so a dry run is observable.
         assert "mcp: custom event" in capsys.readouterr().err
 
-    def test_debug_prints_a_line_and_still_delivers(
-        self, capsys: pytest.CaptureFixture[str]
+    def test_debug_logs_a_line_and_still_delivers(
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        caplog.set_level(logging.DEBUG, logger="amplitude_mcp_analytics")
         mock = make_mock(MCPAnalyticsConfig(debug=True))
 
         mock.track_server_event(server_ctx(), "mcp: custom event")
 
         assert len(mock.events) == 1
-        logged = capsys.readouterr().err
+        logged = caplog.text
         assert "[amplitude-mcp-analytics]" in logged
         assert "mcp: custom event" in logged
 

@@ -8,8 +8,8 @@ owned by the host application. The server identity (``server_name``,
 
 from __future__ import annotations
 
-import importlib
 import time
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -63,9 +63,12 @@ from .tracking.types import TrackEventOptions
 from .types import AmplitudeClientLike, AmplitudeEvent
 from .utils.logger import get_logger
 
-__all__ = ["AmplitudeMCPAnalytics", "create_mcp_analytics"]
+__all__ = ["AmplitudeMCPAnalytics"]
 
-# Marks a server whose `run` we've already wrapped, to stay idempotent.
+# Marks a server whose `run` we've already wrapped, to stay idempotent. Holds a
+# weakref to the instrumenting client (never a strong one — the marker must not
+# keep a client alive) so a second call can tell "same client, no-op" from
+# "a different client is trying to take over".
 _INSTRUMENTED_ATTR = "_amplitude_mcp_instrumented"
 
 
@@ -118,15 +121,13 @@ class AmplitudeMCPAnalytics:
             raw_amplitude = amplitude
             self._owns_client = False
         elif api_key is not None:
-            try:
-                amplitude_module = importlib.import_module("amplitude")
-            except ImportError as err:
-                raise ConfigurationError(
-                    "amplitude-analytics is required for the api_key path. Install it "
-                    "via the extra: uv add 'amplitude-mcp-analytics[amplitude]' (or "
-                    "pass a pre-initialized client via the 'amplitude' option)."
-                ) from err
-            raw_amplitude = amplitude_module.Amplitude(api_key)
+            # `amplitude-analytics` is a hard dependency, so this import is
+            # guaranteed by installation; it stays inside the api_key branch so
+            # importing this SDK never pulls the Amplitude client into a process
+            # that only ever passes one in.
+            from amplitude import Amplitude  # pyright: ignore[reportMissingImports]
+
+            raw_amplitude = Amplitude(api_key)
             self._owns_client = True
         else:
             raise ConfigurationError(
@@ -170,20 +171,31 @@ class AmplitudeMCPAnalytics:
         """Low-level passthrough to the underlying Amplitude client. @internal"""
         self._amplitude.track(event)
 
-    def set_identity(self, input: SetIdentityInput) -> None:
+    def set_identity(
+        self,
+        identity: SetIdentityInput | None = None,
+        *,
+        user_id: str | None = None,
+        device_id: str | None = None,
+        tenant: McpTenant | None = None,
+    ) -> None:
         """Set or override the subject identity on the current request's
         context. Must be called inside an instrumented tool handler (or a
         ``run_with_context`` block). This is the first step of the fallback
         chain and wins over all other identity sources.
 
+        Takes bare keyword arguments, or a positional
+        :class:`SetIdentityInput` (what an ``IdentityResolver`` returns) —
+        never both.
+
         Example (inside a tool handler)::
 
-            analytics.set_identity(SetIdentityInput(
+            analytics.set_identity(
                 user_id=my_auth.get_login_id(),
                 tenant=McpTenant(group_type="org id", group_value=my_auth.get_org_id()),
-            ))
+            )
         """
-        _set_identity_on_ctx(input)
+        _set_identity_on_ctx(identity, user_id=user_id, device_id=device_id, tenant=tenant)
 
     def set_rationale(self, rationale: str) -> None:
         """Set the rationale ("why the agent called this tool") for the current
@@ -242,7 +254,7 @@ class AmplitudeMCPAnalytics:
             fingerprint=fingerprint,
         )
         if ctx is None:
-            get_logger(self._amplitude).warning(
+            get_logger().warning(
                 "tool_error('%s') called without a tool context; returning the MCP "
                 "error result but skipping telemetry. Call it inside an instrumented "
                 "tool handler (or pass the wrapper's ctx).",
@@ -346,7 +358,7 @@ class AmplitudeMCPAnalytics:
                 resolve_identity=resolve_identity,
                 track_tool_calls=self.config.autocapture.tool_calls,
                 sanitize_error_message=self.config.sanitize_error_message,
-                logger=get_logger(self._amplitude),
+                logger=get_logger(),
             )
             return _instrument_tool_factory(deps, fn, resolved_meta)
 
@@ -416,18 +428,32 @@ class AmplitudeMCPAnalytics:
         server; ``transport`` overrides transport auto-detection
         (``'stdio'`` / ``'streamable-http'`` / ``'sse'``).
 
+        Re-instrumenting an already-bound server is a no-op. When the second
+        call comes from a *different* ``AmplitudeMCPAnalytics`` instance the
+        no-op is logged as a warning: the original binding stays active, so the
+        second client's identity/extra/config would silently never apply.
+
         Example::
 
             mcp = FastMCP("my-mcp")
             analytics.instrument_server(mcp, auth_type="oauth")  # before run
             mcp.run()  # transport auto-detected
         """
-        if getattr(server, _INSTRUMENTED_ATTR, False):
+        marker = getattr(server, _INSTRUMENTED_ATTR, None)
+        if marker is not None:
+            # Same client re-binding (a defensive double call) is silent; a
+            # second client is a real misconfiguration worth surfacing.
+            if not (isinstance(marker, weakref.ReferenceType) and marker() is self):
+                get_logger().warning(
+                    "AmplitudeMCPAnalytics: server is already instrumented by another "
+                    "AmplitudeMCPAnalytics client; this call is a no-op — the original "
+                    "binding stays active."
+                )
             return server
         low_level, tool_manager = unwrap_server(server)
-        setattr(server, _INSTRUMENTED_ATTR, True)
+        setattr(server, _INSTRUMENTED_ATTR, weakref.ref(self))
 
-        logger = get_logger(self._amplitude)
+        logger = get_logger()
         sanitize = self.config.sanitize_error_message
 
         # Analytics state owned by THIS binding — never shared across servers,
@@ -467,6 +493,7 @@ class AmplitudeMCPAnalytics:
                 anchor=bound_anchor,
                 extra=extra,
                 emit_anonymous_event=self.config.emit_anonymous_event,
+                sanitize_rationale=self.config.sanitize_rationale,
             )
             scope = ServerScope(
                 ctx=ctx,
@@ -654,23 +681,3 @@ class AmplitudeMCPAnalytics:
             shutdown = getattr(self._amplitude, "shutdown", None)
             if callable(shutdown):
                 shutdown()
-
-
-def create_mcp_analytics(
-    *,
-    server_name: str,
-    server_version: str,
-    amplitude: AmplitudeClientLike | None = None,
-    api_key: str | None = None,
-    config: MCPAnalyticsConfig | None = None,
-) -> AmplitudeMCPAnalytics:
-    """Construct an :class:`AmplitudeMCPAnalytics` client — a factory
-    equivalent to ``AmplitudeMCPAnalytics(...)``, for callers who prefer a
-    function over the class."""
-    return AmplitudeMCPAnalytics(
-        server_name=server_name,
-        server_version=server_version,
-        amplitude=amplitude,
-        api_key=api_key,
-        config=config,
-    )

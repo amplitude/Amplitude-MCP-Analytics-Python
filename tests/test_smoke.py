@@ -5,11 +5,12 @@ finds out."""
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 
 EXPECTED_EXPORTS = [
     # values
     "AmplitudeMCPAnalytics",
-    "create_mcp_analytics",
+    "__version__",
     "MCPAnalyticsConfig",
     "create_server_context",
     "create_tool_context",
@@ -50,6 +51,7 @@ EXPECTED_EXPORTS = [
     "McpToolErrorType",
     "McpToolMeta",
     "McpTransport",
+    "RationaleSanitizer",
     "ResolvedAutocapture",
     "SetIdentityInput",
     "TrackEventOptions",
@@ -80,6 +82,20 @@ def test_subpath_modules_importable() -> None:
         "amplitude_mcp_analytics.types",
     ):
         importlib.import_module(subpath)
+
+
+def test_version_is_the_installed_distribution_version() -> None:
+    module = importlib.import_module("amplitude_mcp_analytics")
+    # Resolved from package metadata (the source tree is installed editable),
+    # never hand-maintained alongside pyproject's `version`.
+    assert module.__version__ == importlib.metadata.version("amplitude-mcp-analytics")
+    assert module.__version__ != "0.0.0"
+
+
+def test_create_mcp_analytics_is_not_exported() -> None:
+    # Dropped before 0.1.0: redundant with the constructor (see PORTING.md).
+    module = importlib.import_module("amplitude_mcp_analytics")
+    assert not hasattr(module, "create_mcp_analytics")
 
 
 def test_mock_defaults() -> None:

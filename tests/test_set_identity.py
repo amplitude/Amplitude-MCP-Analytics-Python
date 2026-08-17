@@ -44,7 +44,7 @@ def bind(mock: MockAmplitudeMCPAnalytics, transport: str = "streamable-http") ->
 class TestSetIdentity:
     def test_raises_when_called_outside_a_context_scope(self) -> None:
         with pytest.raises(RuntimeError, match="outside an active context scope"):
-            set_identity(SetIdentityInput(user_id="alice"))
+            set_identity(user_id="alice")
 
     def test_overrides_identity_on_the_ambient_context_user_id(self) -> None:
         ctx = create_server_context(
@@ -54,7 +54,7 @@ class TestSetIdentity:
         snapshot: dict[str, McpServerContext | None] = {}
 
         def scope() -> None:
-            set_identity(SetIdentityInput(user_id="alice@example.com"))
+            set_identity(user_id="alice@example.com")
             snapshot["ctx"] = get_current_context()
 
         run_with_context(ctx, scope)
@@ -71,7 +71,7 @@ class TestSetIdentity:
         snapshot: dict[str, McpServerContext | None] = {}
 
         def scope() -> None:
-            set_identity(SetIdentityInput(device_id="my-device-id"))
+            set_identity(device_id="my-device-id")
             snapshot["ctx"] = get_current_context()
 
         run_with_context(ctx, scope)
@@ -88,9 +88,7 @@ class TestSetIdentity:
         snapshot: dict[str, McpServerContext | None] = {}
 
         def scope() -> None:
-            set_identity(
-                SetIdentityInput(tenant=McpTenant(group_type="org id", group_value="42"))
-            )
+            set_identity(tenant=McpTenant(group_type="org id", group_value="42"))
             snapshot["ctx"] = get_current_context()
 
         run_with_context(ctx, scope)
@@ -107,14 +105,86 @@ class TestSetIdentity:
 
         run_with_context(
             ctx,
-            lambda: set_identity(
-                SetIdentityInput(tenant=McpTenant(group_type="org id", group_value="42"))
-            ),
+            lambda: set_identity(tenant=McpTenant(group_type="org id", group_value="42")),
         )
 
         # Tenant-only input must not reclassify how the subject was resolved.
         assert ctx.identity.resolved_from == "anchor"
         assert ctx.identity.user_id == "process:1234"
+
+
+class TestSetIdentityCallShapes:
+    """Both spellings are supported — kwargs for everyday use, a positional
+    ``SetIdentityInput`` for forwarding what an ``IdentityResolver`` returns."""
+
+    @staticmethod
+    def _ctx() -> McpServerContext:
+        return create_server_context(
+            server=McpServerInfo(name="test", version="1"),
+            transport="stdio",
+        )
+
+    def test_accepts_a_positional_set_identity_input_dataclass(self) -> None:
+        ctx = self._ctx()
+
+        run_with_context(
+            ctx,
+            lambda: set_identity(
+                SetIdentityInput(
+                    user_id="alice@example.com",
+                    device_id="device-abc",
+                    tenant=McpTenant(group_type="org id", group_value="42"),
+                )
+            ),
+        )
+
+        assert ctx.identity.user_id == "alice@example.com"
+        assert ctx.identity.device_id == "device-abc"
+        assert ctx.identity.resolved_from == "explicit"
+        assert ctx.tenant == McpTenant(group_type="org id", group_value="42")
+
+    def test_the_two_spellings_produce_the_same_result(self) -> None:
+        positional, kwargs = self._ctx(), self._ctx()
+
+        run_with_context(
+            positional, lambda: set_identity(SetIdentityInput(user_id="alice", device_id="d1"))
+        )
+        run_with_context(kwargs, lambda: set_identity(user_id="alice", device_id="d1"))
+
+        assert positional.identity == kwargs.identity
+
+    def test_rejects_mixing_the_dataclass_with_keyword_arguments(self) -> None:
+        ctx = self._ctx()
+
+        with pytest.raises(ValueError, match="not both"):
+            run_with_context(
+                ctx,
+                lambda: set_identity(SetIdentityInput(user_id="alice"), device_id="d1"),
+            )
+
+        # Nothing was applied — the call is rejected before it touches the ctx.
+        assert ctx.identity.user_id is None
+        assert ctx.identity.device_id is None
+
+    def test_the_client_method_rejects_mixing_too(self) -> None:
+        mock = make_mock()
+        ctx = self._ctx()
+
+        with pytest.raises(ValueError, match="not both"):
+            run_with_context(
+                ctx,
+                lambda: mock.set_identity(SetIdentityInput(user_id="alice"), user_id="bob"),
+            )
+
+    def test_a_bare_call_with_nothing_set_is_a_no_op(self) -> None:
+        ctx = self._ctx()
+
+        run_with_context(ctx, lambda: set_identity())
+
+        # No field supplied → nothing to apply, and `resolved_from` must not be
+        # promoted to "explicit" on the strength of an empty call.
+        assert ctx.identity.resolved_from == "anonymous"
+        assert ctx.tenant is None
 
 
 @pytest.mark.anyio
@@ -129,10 +199,8 @@ class TestSetIdentityViaAnalyticsInsideInstrumentTool:
 
         async def handler(**_kwargs: Any) -> dict[str, Any]:
             mock.set_identity(
-                SetIdentityInput(
-                    user_id="alice@example.com",
-                    tenant=McpTenant(group_type="org id", group_value="42"),
-                )
+                user_id="alice@example.com",
+                tenant=McpTenant(group_type="org id", group_value="42"),
             )
             seen["ctx"] = get_current_context()
             return OK
@@ -150,7 +218,7 @@ class TestSetIdentityViaAnalyticsInsideInstrumentTool:
         bind(mock, "streamable-http")
 
         async def resolve_and_set_identity() -> None:
-            mock.set_identity(SetIdentityInput(user_id="deep-call@example.com"))
+            mock.set_identity(user_id="deep-call@example.com")
 
         seen: dict[str, Any] = {}
 

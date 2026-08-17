@@ -68,7 +68,13 @@ def make_amplitude() -> CapturingAmplitude:
 
 
 class ListLogger:
-    """Logger double capturing warning/error lines (duck-typed for get_logger)."""
+    """Logger double capturing warning/error lines.
+
+    For call sites that take a logger *explicitly* (e.g.
+    ``resolve_identity_from_chain(logger=...)``). The SDK's own warnings go to
+    the ``amplitude_mcp_analytics`` logger and are asserted with pytest's
+    ``caplog`` — ``get_logger()`` no longer accepts an injected logger.
+    """
 
     def __init__(self) -> None:
         self.warnings: list[str] = []

@@ -1,35 +1,37 @@
 # Ported from amplitude/Amplitude-MCP-Analytics-Node src/utils/logger.ts
 # (itself vendored from amplitude/Amplitude-AI-Node @ 97ea346).
 # Python adaptation: the stdlib `logging.Logger` replaces the console-backed
-# Logger interface; an injected Amplitude client's `configuration.logger` is
-# preferred when present (the amplitude-analytics Config exposes `logger`).
+# Logger interface, and the SDK owns a single namespace of its own rather than
+# borrowing the injected Amplitude client's logger (see get_logger).
 
 """Internal logger resolution. Not part of the public package surface."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 __all__ = ["get_logger"]
 
-_default_logger = logging.getLogger("amplitude_mcp_analytics")
+LOGGER_NAME = "amplitude_mcp_analytics"
+
+_logger = logging.getLogger(LOGGER_NAME)
 
 
-def get_logger(amplitude: Any = None) -> logging.Logger:
-    """Resolve a logger: prefer a ``logger`` exposed on the underlying
-    Amplitude client's configuration, otherwise the SDK's module logger
-    (warnings/errors surface via logging's last-resort stderr handler when the
-    host hasn't configured logging — matching the Node default of printing
-    only warn/error).
+def get_logger() -> logging.Logger:
+    """The SDK's logger — always ``logging.getLogger("amplitude_mcp_analytics")``.
+
+    This deliberately ignores the injected Amplitude client's
+    ``configuration.logger``. That preference looked like "respect the host's
+    logging choice", but the amplitude-analytics client's logger is never
+    ``None``, so it applied to *every* installation: all of this SDK's warnings
+    were emitted into the ``amplitude`` namespace, and a host that silences that
+    (deservedly chatty) logger silently lost them. Python already has a
+    host-facing configuration surface for this — the logger hierarchy — so the
+    SDK names itself and lets the host route, filter, or silence
+    ``amplitude_mcp_analytics`` on its own terms. Warnings and errors still
+    surface through logging's last-resort stderr handler when the host has
+    configured nothing, matching the Node default of printing only warn/error.
 
     @internal
     """
-    if amplitude is not None:
-        config = getattr(amplitude, "configuration", None)
-        candidate = getattr(config, "logger", None) if config is not None else None
-        if candidate is None and isinstance(config, dict):
-            candidate = config.get("logger")
-        if candidate is not None and hasattr(candidate, "warning"):
-            return candidate
-    return _default_logger
+    return _logger

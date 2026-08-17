@@ -6,18 +6,20 @@ ordering contract is identical — the dry-run gate sits outermost, so dry-run
 events are never counted as unflushed.
 
 Adaptations for the Python design:
-- console.warn spying becomes a ListLogger double routed through
-  ``get_logger`` (which prefers ``raw.configuration.logger``); debug/dry-run
-  lines print to stderr and are read via capsys.
+- console.warn spying becomes ``caplog`` on the SDK's own
+  ``amplitude_mcp_analytics`` logger; the debug line is a DEBUG record on that
+  logger, while the dry-run line still prints to stderr (read via capsys) so a
+  dry run is visible with no logging configured.
 - The transport-level >=400 delivery warning rides a per-event callback on
   each BaseEvent (built only for a real ``amplitude.Amplitude`` client), not a
   composed client-level ``configuration.callback`` — so there is no "preserves
-  an existing callback" case to port.
+  an existing callback" case to port. It logs through the injected
+  ``logging.Logger``, so those cases still use a ListLogger double.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import logging
 from typing import Any
 
 import pytest
@@ -40,15 +42,14 @@ EVENT: AmplitudeEvent = {"event_type": "[MCP] Test", "user_id": "user-123"}
 
 
 class RawClient:
-    """Minimal fake client; exposes ``configuration.logger`` so ``get_logger``
-    routes the SDK's warnings to the ListLogger double."""
+    """Minimal fake client. The SDK logs to its own ``amplitude_mcp_analytics``
+    logger regardless of the injected client, so warnings are read via
+    ``caplog``, not off this double."""
 
     def __init__(self) -> None:
         self.tracked: list[Any] = []
         self.flush_calls = 0
         self.shutdown_calls = 0
-        self.logger = ListLogger()
-        self.configuration = SimpleNamespace(logger=self.logger)
 
     def track(self, event: Any) -> None:
         self.tracked.append(event)
@@ -89,28 +90,41 @@ class TestDryRun:
 
 class TestDebug:
     def test_emits_a_log_line_and_still_delivers(
-        self, capsys: pytest.CaptureFixture[str]
+        self, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        caplog.set_level(logging.DEBUG, logger="amplitude_mcp_analytics")
         raw = RawClient()
         client = build_client(raw, MCPAnalyticsConfig(debug=True))
 
         client.track(EVENT)
 
         assert len(raw.tracked) == 1
-        logged = capsys.readouterr().err
+        # Debug rides the SDK's logger (host-routable), not a stderr print.
+        logged = caplog.text
         # Placeholder debug line emits only the event type for now (pending the
         # MCP event taxonomy — see format_debug_line).
         assert "[amplitude-mcp-analytics]" in logged
         assert "[MCP] Test" in logged
+        assert [r.levelno for r in caplog.records] == [logging.DEBUG]
+        assert capsys.readouterr().err == ""
+
+    def test_emits_nothing_when_debug_is_off(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG, logger="amplitude_mcp_analytics")
+        client = build_client(RawClient(), MCPAnalyticsConfig())
+
+        client.track(EVENT)
+
+        assert caplog.records == []
 
 
 class TestShortIdWarning:
-    def test_fires_once_per_field_value(self) -> None:
+    def test_fires_once_per_field_value(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
         raw = RawClient()
         client = build_client(raw, MCPAnalyticsConfig())
 
         def warned() -> int:
-            return sum("shorter than 5 characters" in w for w in raw.logger.warnings)
+            return sum("shorter than 5 characters" in r.getMessage() for r in caplog.records)
 
         client.track({"event_type": "e", "user_id": "ab"})
         client.track({"event_type": "e", "user_id": "ab"})

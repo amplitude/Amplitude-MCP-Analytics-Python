@@ -3,6 +3,7 @@ fall back to the anonymous floor (anonymous identity/anchor)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from ..errors import McpToolError
@@ -34,6 +35,7 @@ def create_server_context(
     auth_type: str | None = None,
     extra: dict[str, Any] | None = None,
     emit_anonymous_event: bool | None = None,
+    sanitize_rationale: Callable[[str], str | None] | None = None,
 ) -> McpServerContext:
     """Build a server-scope context, flooring identity/anchor when unset.
     ``server`` and ``transport`` are required."""
@@ -48,6 +50,7 @@ def create_server_context(
         auth_type=auth_type,
         extra=extra,
         emit_anonymous_event=emit_anonymous_event,
+        sanitize_rationale=sanitize_rationale,
     )
 
 
@@ -72,6 +75,7 @@ def create_tool_context(
         auth_type=base.auth_type,
         extra=base.extra,
         emit_anonymous_event=base.emit_anonymous_event,
+        sanitize_rationale=base.sanitize_rationale,
     )
     return McpToolContext(
         tenant=floored.tenant,
@@ -84,6 +88,7 @@ def create_tool_context(
         auth_type=floored.auth_type,
         extra=floored.extra,
         emit_anonymous_event=floored.emit_anonymous_event,
+        sanitize_rationale=floored.sanitize_rationale,
         tool=tool,
         request=request,
         error=error,

@@ -10,6 +10,9 @@ transport (``mcp.shared.memory``)."""
 
 from __future__ import annotations
 
+import logging
+import weakref
+
 import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import Server
@@ -74,7 +77,10 @@ async def test_captures_handshake_client_info_into_the_server_scope() -> None:
     assert init[0]["event_properties"]["[MCP] Client Version"] == "3.0"
 
 
-async def test_returns_the_same_server_and_is_idempotent() -> None:
+async def test_returns_the_same_server_and_is_idempotent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
     analytics = make_analytics()
     mcp = FastMCP("test-mcp")
     low = mcp._mcp_server
@@ -88,6 +94,9 @@ async def test_returns_the_same_server_and_is_idempotent() -> None:
 
     analytics.instrument_server(mcp, user_id="user-12345")  # second call is a no-op
     assert low.run is wrapped_once  # run not wrapped twice
+    # Re-binding from the SAME client is a defensive double call, not a
+    # misconfiguration — it stays silent.
+    assert caplog.records == []
 
     # Behavioral proof: one connection yields exactly one lifecycle pair — a
     # double wrap would double the events.
@@ -97,6 +106,52 @@ async def test_returns_the_same_server_and_is_idempotent() -> None:
         pass
     assert len(analytics.get_events("[MCP] Session Initialized")) == 1
     assert len(analytics.get_events("[MCP] Session Ended")) == 1
+
+
+async def test_warns_when_a_second_client_instruments_an_already_bound_server(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    first, second = make_analytics(), make_analytics()
+    mcp = FastMCP("test-mcp")
+    low = mcp._mcp_server
+
+    first.instrument_server(mcp, user_id="user-11111")
+    wrapped_once = low.run
+    caplog.clear()
+
+    returned = second.instrument_server(mcp, user_id="user-22222")
+
+    # Silently doing nothing would leave the second client looking wired up
+    # while none of its options ever apply.
+    assert returned is mcp
+    assert low.run is wrapped_once
+    assert len(caplog.records) == 1
+    warning = caplog.records[0].getMessage()
+    assert "already instrumented by another AmplitudeMCPAnalytics client" in warning
+    assert "no-op" in warning
+
+    # The original binding is the one that stays active.
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=CLIENT
+    ):
+        pass
+    assert len(first.get_events("[MCP] Session Initialized")) == 1
+    assert second.events == []
+
+
+async def test_the_instrumentation_marker_does_not_keep_the_client_alive() -> None:
+    # The marker holds a weakref: a server outliving its analytics client must
+    # not pin that client (and its buffered events) in memory.
+    mcp = FastMCP("test-mcp")
+    analytics = make_analytics()
+    analytics.instrument_server(mcp, user_id="user-12345")
+
+    ref = weakref.ref(analytics)
+    marker = mcp._amplitude_mcp_instrumented
+    assert isinstance(marker, weakref.ReferenceType)
+    assert marker() is analytics
+    assert ref() is analytics
 
 
 async def test_creates_a_fresh_scope_per_run() -> None:

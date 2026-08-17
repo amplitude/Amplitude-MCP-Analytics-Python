@@ -59,7 +59,7 @@ match wins):
 
 | Order | Source | Identity `resolvedFrom` |
 | -- | -- | -- |
-| 1 | `analytics.set_identity(SetIdentityInput(...))` called during the request | `explicit` |
+| 1 | `analytics.set_identity(user_id=..., ...)` called during the request | `explicit` |
 | 2 | `resolve_identity(auth_info)` callback (per-tool opt-in) returning a non-empty result | `authInfo` |
 | 3 | Static identity from `instrument_server(server, user_id=..., device_id=..., tenant=...)` | `explicit` |
 | 4 | Correlation anchor available (process / session id / trace) | `anchor` |
@@ -229,6 +229,7 @@ The default tool-execution event — one per call of a handler wrapped with
 | `[MCP] Tool Owner` | string | when set | `owner` from the tool metadata |
 | `[MCP] Tool Tags` | string[] | when set, non-empty | `tags` from the tool metadata (`meta`) |
 | `[MCP] Tool Category` | string | when set, non-empty | `category` from the tool metadata (`meta`) |
+| `[MCP] Rationale` | string | when the host called `set_rationale` during the call, unless dropped by [`sanitize_rationale`](#redacting-mcp-rationale) | Why the agent called this tool, as supplied by the host — never sniffed out of tool inputs by the SDK. Truncated to 1000 characters |
 | `[MCP] Is Error` | boolean | always | `true` on a raised exception or an in-band `isError` result |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock handler duration, rounded |
 | `[MCP] Request Size` | number (bytes) | when the call carried arguments, when serializable | Serialized byte size of the tool's arguments — the handler's keyword arguments (how FastMCP calls tools) or its first positional argument (low-level handlers). Absent for calls with no arguments |
@@ -471,6 +472,37 @@ The message reaching the client is never modified; this affects telemetry only.
 To control the client-facing text as well, build the result with
 `analytics.tool_error(ctx, code=..., message=...)`.
 
+### Redacting `[MCP] Rationale`
+
+`[MCP] Rationale` is the other free-text property, and the only one the *model*
+writes. A rationale is prose about why a tool was called, so it can quote the
+end user's prompt verbatim — `"the user wants the invoice for
+jane@example.com"` — even when every argument the tool received is clean. Your
+server chose to call `set_rationale`, but it did not choose the words.
+
+`sanitize_rationale` is the counterpart to `sanitize_error_message`: same
+signature, same fail-closed contract.
+
+```python
+from amplitude_mcp_analytics import MCPAnalyticsConfig
+
+# Truncate to a length that keeps the category but not the quoted prompt:
+MCPAnalyticsConfig(sanitize_rationale=lambda rationale: rationale[:120])
+
+# Or drop the property outright, keeping the rest of the tool event:
+MCPAnalyticsConfig(sanitize_rationale=lambda rationale: None)
+```
+
+It applies wherever the property is lowered — the default
+`[MCP] Tool Call Response` event and every tool-scope custom event of the same
+invocation — so no emit path bypasses it. A sanitizer that raises, or returns
+anything other than a string, omits the property rather than falling back to the
+raw text. Left unset, the rationale is emitted exactly as supplied (the v0
+default: configuring nothing changes nothing on the wire).
+
+The rationale is host-supplied and never travels back to the client, so this
+affects telemetry only.
+
 ## Custom events
 
 `track_server_event(ctx, name, properties=None, options=None)` and
@@ -540,7 +572,7 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Error Type` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
 | `[MCP] Is Error` | boolean | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |
 | `[MCP] Protocol Version` | string | All (when known) |
-| `[MCP] Rationale` | string | Tool-scope (opt-in, via `set_rationale`) |
+| `[MCP] Rationale` | string | Tool-scope (opt-in, via `set_rationale`; redactable via [`sanitize_rationale`](#redacting-mcp-rationale)) |
 | `[MCP] Rejection Reason` | string | `Tool Call Rejected` |
 | `[MCP] Request Size` | number | `Tool Call Response` |
 | `[MCP] Response Duration` | number | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |

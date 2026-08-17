@@ -14,6 +14,7 @@ from typing import Any
 
 from ..context.types import McpServerContext, McpToolContext
 from .constants import EVENT_PROPERTY_KEYS, NO_SESSION, UNKNOWN
+from .sanitize_error_message import apply_sanitizer
 from .types import AmplitudeFields, DefaultServerFields, DefaultToolFields
 
 __all__ = ["ctx_to_amplitude_fields", "ctx_to_amplitude_fields_for_tool", "should_emit"]
@@ -74,7 +75,12 @@ def ctx_to_amplitude_fields_for_tool(ctx: McpToolContext) -> AmplitudeFields:
         fields["tool_category"] = category
     rationale = ctx.request.rationale if ctx.request is not None else None
     if isinstance(rationale, str) and len(rationale) > 0:
-        fields["rationale"] = rationale
+        # Both the default Tool Call Response event and tool-scope custom events
+        # lower rationale here, so this is the single point `sanitize_rationale`
+        # has to hold (fail-closed: a raise or a non-string drops the property).
+        sanitized = apply_sanitizer(rationale, ctx.sanitize_rationale)
+        if sanitized:
+            fields["rationale"] = sanitized
     response_http_status = ctx.request.response_http_status if ctx.request is not None else None
     if isinstance(response_http_status, int):
         fields["response_http_status"] = response_http_status

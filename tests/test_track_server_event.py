@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import logging
 from typing import Any
+
+import pytest
 
 from amplitude_mcp_analytics.context.factory import create_server_context
 from amplitude_mcp_analytics.context.types import (
@@ -14,7 +16,7 @@ from amplitude_mcp_analytics.context.types import (
 )
 from amplitude_mcp_analytics.tracking.track import track_server_event
 from amplitude_mcp_analytics.tracking.types import TrackEventOptions
-from conftest import ListLogger, make_amplitude
+from conftest import make_amplitude
 
 
 def resolved_ctx(**overrides: Any) -> Any:
@@ -30,11 +32,8 @@ def resolved_ctx(**overrides: Any) -> Any:
 
 
 class ThrowingAmplitude:
-    """Structural client whose track() always raises; the SDK's warning is
-    resolved off `configuration.logger` (see utils/logger.get_logger)."""
-
-    def __init__(self, logger: ListLogger) -> None:
-        self.configuration = SimpleNamespace(logger=logger)
+    """Structural client whose track() always raises; the SDK's warning lands on
+    its own `amplitude_mcp_analytics` logger (see utils/logger.get_logger)."""
 
     def track(self, event: Any) -> None:
         raise RuntimeError("amplitude broke")
@@ -112,16 +111,19 @@ class TestTrackServerEvent:
 
         assert len(client.tracked) == 1
 
-    def test_swallows_underlying_client_errors_and_never_raises(self) -> None:
+    def test_swallows_underlying_client_errors_and_never_raises(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # best-effort isolation
-        logger = ListLogger()
-        client = ThrowingAmplitude(logger)
+        caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+        client = ThrowingAmplitude()
 
         track_server_event(client, resolved_ctx(), "mcp: failing event")  # must not raise
 
-        assert len(logger.warnings) == 1
-        assert "mcp: failing event" in logger.warnings[0]
-        assert "amplitude broke" in logger.warnings[0]
+        assert len(caplog.records) == 1
+        warning = caplog.records[0].getMessage()
+        assert "mcp: failing event" in warning
+        assert "amplitude broke" in warning
 
     def test_emits_ctx_extra_values_host_domain_enrichment_onto_event_properties(self) -> None:
         client = make_amplitude()

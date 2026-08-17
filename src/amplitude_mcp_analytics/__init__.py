@@ -1,14 +1,19 @@
 """Amplitude MCP Analytics SDK — MCP server usage tracking for Amplitude.
 
 Public surface (semver-governed; guarded by ``tests/test_smoke.py``). Mirrors
-the Node SDK's root exports 1:1 in snake_case.
+the Node SDK's root exports in snake_case, minus the ones Python does not need
+(see ``PORTING.md``).
 """
 
-from .client import AmplitudeMCPAnalytics, create_mcp_analytics
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
+from .client import AmplitudeMCPAnalytics
 from .config import (
     AutocaptureConfig,
     ErrorMessageSanitizer,
     MCPAnalyticsConfig,
+    RationaleSanitizer,
     ResolvedAutocapture,
 )
 from .context import (
@@ -54,6 +59,11 @@ from .tracking import (
 from .tracking.track import track_server_event, track_tool_event
 from .types import AmplitudeClientLike, AmplitudeEvent
 
+try:
+    __version__ = _version("amplitude-mcp-analytics")
+except PackageNotFoundError:  # pragma: no cover — running from an uninstalled source tree
+    __version__ = "0.0.0"
+
 __all__ = [
     "AmplitudeClientLike",
     "AmplitudeEvent",
@@ -81,12 +91,13 @@ __all__ = [
     "McpToolMeta",
     "McpTransport",
     "MockAmplitudeMCPAnalytics",
+    "RationaleSanitizer",
     "ResolvedAutocapture",
     "SetIdentityInput",
     "TrackEventOptions",
+    "__version__",
     "build_tool_error",
     "classify_error",
-    "create_mcp_analytics",
     "create_server_context",
     "create_tool_context",
     "ctx_to_amplitude_fields",

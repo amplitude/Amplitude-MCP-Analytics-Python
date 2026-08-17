@@ -144,6 +144,12 @@ class McpServerContext:
     creation so the emit gate (``should_emit``) can honor it without threading
     config through every emit path. When truthy, the fully anonymous,
     tenant-less floor still emits. Internal."""
+    sanitize_rationale: Callable[[str], str | None] | None = None
+    """Resolved from ``config.sanitize_rationale``, stamped at context creation
+    for the same reason as ``emit_anonymous_event``: ``[MCP] Rationale`` is
+    lowered from the ctx by both the default tool event and every tool-scope
+    custom event, and the ctx is the one seam all of them share. ``None`` means
+    pass-through. Internal."""
 
 
 @dataclass

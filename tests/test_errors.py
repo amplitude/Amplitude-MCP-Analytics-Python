@@ -13,8 +13,8 @@ Python-idiomatic classification divergences (intentional — see src errors.py):
 
 from __future__ import annotations
 
+import logging
 import re
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -32,7 +32,7 @@ from amplitude_mcp_analytics.errors import (
     normalize_message,
     tool_error_result,
 )
-from conftest import ListLogger, make_amplitude
+from conftest import make_amplitude
 
 HEX12 = re.compile(r"^[0-9a-f]{12}$")
 
@@ -416,14 +416,12 @@ class TestAmplitudeMCPAnalyticsToolError:
         assert ctx.error.recoverable is True
 
     def test_returns_the_mcp_error_result_and_warns_when_ctx_is_missing_never_raises(
-        self,
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # Node captures console.warn; Python resolves the logger off the raw
-        # client's `configuration.logger` (see utils/logger.get_logger).
-        logger = ListLogger()
-        client = make_amplitude()
-        client.configuration = SimpleNamespace(logger=logger)  # type: ignore[attr-defined]
-        analytics, _ = make_analytics(amplitude=client)
+        # Node captures console.warn; Python logs to the SDK's own
+        # `amplitude_mcp_analytics` logger (see utils/logger.get_logger).
+        caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+        analytics, _ = make_analytics()
 
         result = analytics.tool_error(
             None, code="missing_chart_id", message="No chart ID was provided."
@@ -431,7 +429,9 @@ class TestAmplitudeMCPAnalyticsToolError:
 
         assert result["isError"] is True
         assert result["content"][0] == {"type": "text", "text": "No chart ID was provided."}
-        assert any("tool_error('missing_chart_id')" in w for w in logger.warnings)
+        assert any(
+            "tool_error('missing_chart_id')" in r.getMessage() for r in caplog.records
+        )
 
 
 class TestInstrumentToolErrorClassification:

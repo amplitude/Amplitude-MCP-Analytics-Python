@@ -5,8 +5,8 @@ resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform != 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.11' and sys_platform == 'win32'",
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
@@ -27,15 +27,12 @@ wheels = [
 name = "amplitude-mcp-analytics"
 version = "0.1.0"
 source = { editable = "." }
-
-[package.optional-dependencies]
-amplitude = [
+dependencies = [
     { name = "amplitude-analytics" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "amplitude-analytics" },
     { name = "anyio" },
     { name = "mcp" },
     { name = "pyright" },
@@ -45,12 +42,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "amplitude-analytics", marker = "extra == 'amplitude'", specifier = ">=1.2" }]
-provides-extras = ["amplitude"]
+requires-dist = [{ name = "amplitude-analytics", specifier = ">=1.2" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "amplitude-analytics", specifier = ">=1.2" },
     { name = "anyio", specifier = ">=4.0" },
     { name = "mcp", specifier = ">=1.16,<2" },
     { name = "pyright", specifier = ">=1.1.390" },

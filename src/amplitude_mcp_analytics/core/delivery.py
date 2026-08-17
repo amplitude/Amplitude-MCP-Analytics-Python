@@ -132,6 +132,10 @@ def _reset_unflushed_state() -> None:  # pyright: ignore[reportUnusedFunction] â
 
 
 def _exit_warning() -> None:
+    # Deliberately `print`, not `logger.warning`: this runs from an atexit hook,
+    # where logging may already have been torn down (`logging.shutdown` is itself
+    # registered atexit), and a dropped-events warning is exactly the message
+    # that must never be the one lost.
     if not is_serverless():
         return
     if _global_unflushed_count > 0:
@@ -160,7 +164,9 @@ def register_exit_hook() -> None:
 
 def _resolve_amplitude_types() -> tuple[type, type] | None:
     """The (Amplitude, BaseEvent) classes when amplitude-analytics is
-    importable, else None. Lazy so the SDK keeps zero hard deps."""
+    importable, else None. `amplitude-analytics` is a hard dependency, so the
+    None branch is defensive only (a broken install); the import stays lazy so
+    it is paid once, on first client construction, rather than at SDK import."""
     try:
         from amplitude import Amplitude, BaseEvent  # pyright: ignore[reportMissingImports]
     except ImportError:
@@ -192,20 +198,18 @@ class DeliveryClient:
         self._is_real_amplitude = amp_types is not None and isinstance(raw, amp_types[0])
         self._base_event_cls = amp_types[1] if amp_types is not None else None
 
-    @property
-    def configuration(self) -> Any:
-        """Delegate so logger resolution sees the raw client's configuration."""
-        return getattr(self._raw, "configuration", None)
-
     def track(self, event: AmplitudeEvent) -> None:
-        logger = get_logger(self._raw)
+        logger = get_logger()
 
         # Short-ID warning â€” Amplitude server rejects user_id/device_id shorter
         # than 5 characters with HTTP 400.
         _warn_short_id(event, logger)
 
+        # Debug goes through logging (the host's own filter/route surface);
+        # dry-run keeps printing, since a dry run is an explicit "show me the
+        # events" request that must be visible with no logging setup at all.
         if self._config.debug:
-            print(format_debug_line(event), file=sys.stderr)
+            logger.debug("%s", format_debug_line(event))
         if self._config.dry_run:
             print(format_dry_run_line(event), file=sys.stderr)
             return
