@@ -1,0 +1,26 @@
+"""Serialization helpers shared by the event emitters. Internal."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+__all__ = ["byte_size"]
+
+
+def byte_size(value: Any) -> int | None:
+    """Serialized byte size of a value, or ``None`` when absent or not
+    JSON-serializable. Best-effort — never raises into the emit path.
+
+    Uses compact separators and ``ensure_ascii=False`` so sizes line up with
+    the Node SDK's ``Buffer.byteLength(JSON.stringify(v))`` for plain data
+    (sizes remain approximations across SDKs for non-plain values). ``None``
+    input means "absent" and returns ``None``. @internal
+    """
+    if value is None:
+        return None
+    try:
+        encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    return len(encoded.encode("utf-8"))
