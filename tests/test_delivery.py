@@ -62,6 +62,25 @@ class RawClient:
         self.shutdown_calls += 1
 
 
+class ExplodingClient(RawClient):
+    """A client whose transport is down: ``flush``/``shutdown`` raise, so the
+    events they were meant to deliver are still queued afterwards."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.explode = True
+
+    def flush(self) -> list[Any]:
+        if self.explode:
+            raise RuntimeError("network down")
+        return super().flush()
+
+    def shutdown(self) -> None:
+        if self.explode:
+            raise RuntimeError("network down")
+        super().shutdown()
+
+
 def build_client(raw: Any, config: MCPAnalyticsConfig) -> DeliveryClient:
     """Wire a delivery client the same way the analytics constructor does."""
     return DeliveryClient(raw, config)
@@ -260,6 +279,43 @@ class TestUnflushedCounter:
 
         assert get_global_unflushed_count() == 0
         assert raw.shutdown_calls == 1
+
+    def test_client_flush_returns_the_underlying_result(self) -> None:
+        raw = RawClient()
+        analytics = self.make_client(raw)
+
+        assert analytics.flush() == []
+
+    def test_a_failed_flush_leaves_the_events_counted_as_unflushed(self) -> None:
+        # Settling before the flush succeeds permanently disarms the serverless
+        # exit warning for events that are, in fact, still queued.
+        raw = ExplodingClient()
+        analytics = self.make_client(raw)
+
+        analytics.track(EVENT)
+        analytics.track(EVENT)
+        assert get_global_unflushed_count() == 2
+
+        with pytest.raises(RuntimeError, match="network down"):
+            analytics.flush()
+
+        assert get_global_unflushed_count() == 2
+        # And a later successful flush still settles exactly those events.
+        raw.explode = False
+        analytics.flush()
+        assert get_global_unflushed_count() == 0
+
+    def test_a_failed_shutdown_leaves_the_events_counted_as_unflushed(self) -> None:
+        raw = ExplodingClient()
+        analytics = self.make_client(raw)
+        analytics._owns_client = True  # only an owned client is torn down
+
+        analytics.track(EVENT)
+
+        with pytest.raises(RuntimeError, match="network down"):
+            analytics.shutdown()
+
+        assert get_global_unflushed_count() == 1
 
     def test_settle_is_clamped_at_zero(self) -> None:
         increment_unflushed_count()

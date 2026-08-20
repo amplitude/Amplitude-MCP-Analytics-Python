@@ -12,11 +12,13 @@ its dispatch around ``inspect.iscoroutinefunction``."""
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from typing import Any
 
 import anyio
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from amplitude_mcp_analytics import (
     AmplitudeMCPAnalytics,
@@ -150,6 +152,79 @@ async def test_emits_request_and_response_sizes_when_computable() -> None:
     # No arguments → there is no request body to measure; nothing is fabricated.
     assert "[MCP] Request Size" not in no_args_event["event_properties"]
     assert isinstance(no_args_event["event_properties"]["[MCP] Response Size"], int)
+
+
+@pytest.mark.anyio
+async def test_measures_sizes_for_pydantic_results_and_arguments() -> None:
+    # Neither side is guaranteed to be plain data: a low-level handler may
+    # return a pydantic `CallToolResult` (the shape `is_error_result` already
+    # understands) and a validated pydantic model may arrive as an argument.
+    # `json.dumps` refuses both, so measuring with it silently drops the size
+    # properties the documented contract promises via `model_dump_json`.
+    mock = make_mock()
+    result = CallToolResult(content=[TextContent(type="text", text="hello world")])
+    request_model = TextContent(type="text", text="a query from the model")
+
+    async def handler(payload: TextContent) -> CallToolResult:
+        return result
+
+    wrapped = mock.instrument_tool(handler, name="pydantic_tool")
+    bind(mock)
+
+    await wrapped(payload=request_model)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Response Size"] == len(
+        result.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")
+    )
+    assert isinstance(props["[MCP] Request Size"], int)
+    assert props["[MCP] Request Size"] > 0
+
+
+@pytest.mark.anyio
+async def test_an_unserializable_argument_still_omits_the_size() -> None:
+    # Teaching the serializer about pydantic must not turn "not measurable"
+    # into a fabricated number: a FastMCP `Context`-shaped argument has no
+    # JSON form, so the property stays absent and the event still emits.
+    mock = make_mock()
+
+    class NotSerializable:
+        pass
+
+    async def handler(payload: Any) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="opaque_tool")
+    bind(mock)
+
+    await wrapped(payload=NotSerializable())
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert "[MCP] Request Size" not in props
+    assert props["[MCP] Is Error"] is False
+
+
+@pytest.mark.anyio
+async def test_plain_dict_sizes_are_unchanged() -> None:
+    # Guard the common path against the pydantic-aware measurement: a plain
+    # dict result must still measure as its compact JSON, byte for byte.
+    mock = make_mock()
+
+    async def handler(q: str) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="plain_tool")
+    bind(mock)
+
+    await wrapped(q="hello")
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Response Size"] == len(
+        json.dumps(OK, separators=(",", ":")).encode("utf-8")
+    )
+    assert props["[MCP] Request Size"] == len(
+        json.dumps({"q": "hello"}, separators=(",", ":")).encode("utf-8")
+    )
 
 
 @pytest.mark.anyio

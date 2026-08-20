@@ -99,8 +99,15 @@ identity floor:
 | stdio | `process` | Server process id | `no-session` |
 | Streamable HTTP, session id present (stateful) | `session-id` | The transport session id (`mcp-session-id` header) | The session id |
 | SSE | `session-id` | The `session_id` query param | The session id |
-| Streamable HTTP, stateless, W3C `traceparent` in `_meta` | `trace` | The 32-hex trace id | `no-session` |
+| Streamable HTTP, stateless, W3C `traceparent` propagated | `trace` | The 32-hex trace id | `no-session` |
 | Streamable HTTP, stateless, no trace context | `anonymous` | Random UUID per request | `no-session` |
+
+The trace anchor reads the standard `traceparent` HTTP header first and
+`_meta.traceparent` second, so a normally propagated W3C trace context
+correlates without the client doing anything MCP-specific. Only a
+fully-valid `traceparent` counts (`version-traceid-parentid-flags`, all hex,
+no all-zero trace or parent id); a malformed one is treated as absent rather
+than anchored on.
 
 A session id is never assumed or fabricated — its absence is what selects the
 stateless branch. One host escape hatch: a session id bound via
@@ -546,8 +553,10 @@ rendered, and keep sensitive values out.
   wall-clock milliseconds, rounded to the nearest integer.
 - **Sizes** (`[MCP] Request Size`, `[MCP] Response Size`) are the UTF-8 byte
   length of the value's compact JSON serialization (`json.dumps` with compact
-  separators; pydantic results via `model_dump_json`) — the payload semantics,
-  not the bytes on the wire. Omitted when the value isn't JSON-serializable.
+  separators; pydantic values — a `CallToolResult` a low-level handler
+  returned, a validated model argument, or either nested inside a payload —
+  via their own JSON dump) — the payload semantics, not the bytes on the wire.
+  Omitted when the value isn't JSON-serializable.
   Sizes are approximations and may differ slightly across SDKs (the Node SDK
   measures `JSON.stringify` output) — treat them as comparable magnitudes, not
   exact wire measurements.

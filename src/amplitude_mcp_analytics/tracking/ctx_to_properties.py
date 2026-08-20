@@ -78,8 +78,12 @@ def ctx_to_amplitude_fields_for_tool(ctx: McpToolContext) -> AmplitudeFields:
         # Both the default Tool Call Response event and tool-scope custom events
         # lower rationale here, so this is the single point `sanitize_rationale`
         # has to hold (fail-closed: a raise or a non-string drops the property).
+        # `is not None`, not truthiness: the sanitizer contract omits the
+        # property only on None/non-string/raise, so a deliberate `""`
+        # replacement is emitted — same as `[MCP] Error Message`. A raw empty
+        # rationale never reaches here (guarded above).
         sanitized = apply_sanitizer(rationale, ctx.sanitize_rationale)
-        if sanitized:
+        if sanitized is not None:
             fields["rationale"] = sanitized
     response_http_status = ctx.request.response_http_status if ctx.request is not None else None
     if isinstance(response_http_status, int):

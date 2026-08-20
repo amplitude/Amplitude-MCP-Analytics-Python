@@ -13,10 +13,24 @@ jobs:
     name: Publish
     runs-on: ubuntu-latest
     # Only fire when the merged PR is a release PR opened by release.yml.
-    # Checks both the title prefix and a marker phrase in the body — the
-    # marker is what makes accidental/spoofed matches very unlikely.
+    #
+    # The first two conditions are the authorization: PR title and body are
+    # free text any contributor can copy, so on their own they let any merged
+    # PR run this job with `contents: write` and the PyPI token. Author and
+    # head branch are set by the forge, not the PR author:
+    #   - release.yml runs `gh pr create` with the default GITHUB_TOKEN, so the
+    #     PR is authored by the Actions bot (`github-actions[bot]`).
+    #   - it pushes `release/v<version>` (BRANCH="release/${VERSION}", with
+    #     VERSION="v$(uv version --short)") and opens the PR from that branch,
+    #     so head.ref always starts with `release/v`. Opening a branch under
+    #     that prefix requires push access to this repo, and authoring as the
+    #     bot requires triggering release.yml itself (workflow_dispatch on
+    #     main) — neither is available to an outside PR author.
+    # Title and body checks stay as defense in depth.
     if: |
       github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'release/v') &&
       startsWith(github.event.pull_request.title, 'chore(release): v') &&
       contains(github.event.pull_request.body, 'Automated release PR for')
     steps:

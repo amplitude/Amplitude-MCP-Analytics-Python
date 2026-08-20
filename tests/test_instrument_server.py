@@ -140,6 +140,90 @@ async def test_warns_when_a_second_client_instruments_an_already_bound_server(
     assert second.events == []
 
 
+async def test_instrumenting_the_inner_server_after_the_wrapper_is_a_no_op(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A FastMCP and its `_mcp_server` are two views of ONE server sharing one
+    # `run`, so the second client can never take over — without a marker on
+    # both views it looked configured while emitting nothing of its own.
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    first, second = make_analytics(), make_analytics()
+    mcp = FastMCP("test-mcp")
+    low = mcp._mcp_server
+
+    first.instrument_server(mcp, user_id="user-11111")
+    wrapped_once = low.run
+    caplog.clear()
+
+    returned = second.instrument_server(low, user_id="user-22222")
+
+    assert returned is low
+    assert low.run is wrapped_once  # the first binding's wrapper still serves
+    assert len(caplog.records) == 1
+    assert "already instrumented by another AmplitudeMCPAnalytics client" in (
+        caplog.records[0].getMessage()
+    )
+    # The marker still points at the client that actually owns the binding.
+    assert mcp._amplitude_mcp_instrumented() is first
+    assert low._amplitude_mcp_instrumented() is first
+
+    async with create_connected_server_and_client_session(low, client_info=CLIENT):
+        pass
+    assert len(first.get_events("[MCP] Session Initialized")) == 1
+    assert second.events == []
+
+
+async def test_instrumenting_the_wrapper_after_the_inner_server_is_a_no_op(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The reverse order — bind the low-level view first, then the FastMCP
+    # wrapper the host happens to hold.
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    first, second = make_analytics(), make_analytics()
+    mcp = FastMCP("test-mcp")
+    low = mcp._mcp_server
+
+    first.instrument_server(low, user_id="user-11111")
+    wrapped_once = low.run
+    caplog.clear()
+
+    second.instrument_server(mcp, user_id="user-22222")
+
+    assert low.run is wrapped_once
+    assert len(caplog.records) == 1
+    assert "already instrumented by another AmplitudeMCPAnalytics client" in (
+        caplog.records[0].getMessage()
+    )
+
+    async with create_connected_server_and_client_session(low, client_info=CLIENT):
+        pass
+    assert len(first.get_events("[MCP] Session Initialized")) == 1
+    assert second.events == []
+
+
+async def test_the_same_client_rebinding_through_the_other_view_stays_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Same client, both views: a defensive double call, not a misconfiguration.
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    analytics = make_analytics()
+    mcp = FastMCP("test-mcp")
+    low = mcp._mcp_server
+
+    analytics.instrument_server(mcp, user_id="user-12345")
+    wrapped_once = low.run
+    analytics.instrument_server(low, user_id="user-12345")
+
+    assert low.run is wrapped_once
+    assert caplog.records == []
+
+    async with create_connected_server_and_client_session(low, client_info=CLIENT):
+        pass
+    # One binding, one lifecycle pair — no doubled events.
+    assert len(analytics.get_events("[MCP] Session Initialized")) == 1
+    assert len(analytics.get_events("[MCP] Session Ended")) == 1
+
+
 async def test_the_instrumentation_marker_does_not_keep_the_client_alive() -> None:
     # The marker holds a weakref: a server outliving its analytics client must
     # not pin that client (and its buffered events) in memory.
@@ -148,9 +232,10 @@ async def test_the_instrumentation_marker_does_not_keep_the_client_alive() -> No
     analytics.instrument_server(mcp, user_id="user-12345")
 
     ref = weakref.ref(analytics)
-    marker = mcp._amplitude_mcp_instrumented
-    assert isinstance(marker, weakref.ReferenceType)
-    assert marker() is analytics
+    # Both views carry a marker, and neither may be a strong reference.
+    for marker in (mcp._amplitude_mcp_instrumented, mcp._mcp_server._amplitude_mcp_instrumented):
+        assert isinstance(marker, weakref.ReferenceType)
+        assert marker() is analytics
     assert ref() is analytics
 
 

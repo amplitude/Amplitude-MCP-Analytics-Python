@@ -102,6 +102,11 @@ class TestApplySanitizerHelper:
     def test_omits_the_value_when_the_sanitizer_returns_a_non_string(self) -> None:
         assert apply_sanitizer("why", lambda v: 42) is None  # type: ignore[arg-type,return-value]
 
+    def test_keeps_an_empty_string_replacement(self) -> None:
+        # `""` is a string the sanitizer chose to return — the contract omits
+        # the property only on None / non-string / raise.
+        assert apply_sanitizer("why", lambda v: "") == ""
+
     def test_fails_closed_when_the_sanitizer_raises_never_falls_back_to_raw(self) -> None:
         def thrower(v: str) -> str:
             raise RuntimeError("sanitizer bug")
@@ -156,6 +161,18 @@ class TestToolCallResponseRationaleSanitization:
         )
         assert "[MCP] Rationale" not in props
 
+    async def test_emits_an_empty_string_replacement_instead_of_dropping_it(self) -> None:
+        # An emptied-out rationale is a *rewrite*, not a decline: the sanitizer
+        # returned a string, so the property is emitted (as `""`) — the same
+        # thing `[MCP] Error Message` does with an empty replacement. Dropping
+        # it here would make "the sanitizer scrubbed everything" and "there was
+        # no rationale" indistinguishable downstream.
+        props = props_of(
+            await call_tool_with_rationale(MCPAnalyticsConfig(sanitize_rationale=lambda _v: "")),
+            RESPONSE,
+        )
+        assert props["[MCP] Rationale"] == ""
+
     async def test_never_runs_when_no_rationale_was_set(self) -> None:
         calls: list[str] = []
 
@@ -209,6 +226,12 @@ class TestCustomToolEventRationaleSanitization:
     async def test_passes_through_on_a_custom_tool_event_by_default(self) -> None:
         events = await call_tool_with_rationale(emit_custom=True)
         assert props_of(events, CUSTOM)["[MCP] Rationale"] == PII
+
+    async def test_keeps_an_empty_string_replacement_on_a_custom_tool_event(self) -> None:
+        events = await call_tool_with_rationale(
+            MCPAnalyticsConfig(sanitize_rationale=lambda _v: ""), emit_custom=True
+        )
+        assert props_of(events, CUSTOM)["[MCP] Rationale"] == ""
 
 
 class TestConfigSanitizeRationale:

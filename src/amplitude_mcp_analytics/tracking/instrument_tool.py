@@ -44,7 +44,7 @@ from ..context.types import IdentityResolver, McpServerContext, McpToolContext, 
 from ..context.vars import _context_var
 from ..core.build_context import build_tool_context
 from ..core.identity import ServerIdentity
-from ..core.serialize import byte_size
+from ..core.serialize import payload_byte_size
 from ..core.tool_call_hook import mark_tool_call_dispatched
 from ..errors import build_tool_error, classify_error, error_message_from_result, is_error_result
 from ..types import AmplitudeClientLike
@@ -206,13 +206,20 @@ def instrument_tool(
         elif call_args:
             request_payload = call_args[0]
 
+        # `payload_byte_size`, not plain `byte_size`: handler arguments and
+        # returns are not always plain data. A low-level handler may return a
+        # pydantic `CallToolResult` (the shape `is_error_result` already
+        # supports) and a FastMCP tool may be handed a validated pydantic
+        # model argument — `json.dumps` refuses both, silently dropping the
+        # size property that the documented contract says is measured via
+        # `model_dump_json`.
         emit_tool_call_response(
             deps.amplitude,
             ctx,
             is_tool_error=is_tool_error,
             duration_ms=duration_ms,
-            request_size_bytes=byte_size(request_payload),
-            response_size_bytes=byte_size(returned) if not raised else None,
+            request_size_bytes=payload_byte_size(request_payload),
+            response_size_bytes=payload_byte_size(returned) if not raised else None,
             sanitize=deps.sanitize_error_message,
         )
 

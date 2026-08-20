@@ -38,7 +38,7 @@ from .core.delivery import (
 from .core.identity import ServerIdentity
 from .core.mcp import current_request_context, lookup_registered_tool, unwrap_server
 from .core.run_wrapper import install_run_wrapper
-from .core.serialize import byte_size, result_byte_size
+from .core.serialize import byte_size, payload_byte_size
 from .core.server_scope import ServerScope, current_server_scope
 from .core.tool_call_hook import install_tool_call_hook, was_tool_call_dispatched
 from .core.tool_call_rejection import classify_pre_dispatch_rejection
@@ -68,7 +68,9 @@ __all__ = ["AmplitudeMCPAnalytics"]
 # Marks a server whose `run` we've already wrapped, to stay idempotent. Holds a
 # weakref to the instrumenting client (never a strong one — the marker must not
 # keep a client alive) so a second call can tell "same client, no-op" from
-# "a different client is trying to take over".
+# "a different client is trying to take over". Stamped on BOTH views of a
+# server (the FastMCP wrapper and its low-level `_mcp_server`), since either
+# may be handed to instrument_server and they share one wrapped `run`.
 _INSTRUMENTED_ATTR = "_amplitude_mcp_instrumented"
 
 
@@ -428,10 +430,12 @@ class AmplitudeMCPAnalytics:
         server; ``transport`` overrides transport auto-detection
         (``'stdio'`` / ``'streamable-http'`` / ``'sse'``).
 
-        Re-instrumenting an already-bound server is a no-op. When the second
-        call comes from a *different* ``AmplitudeMCPAnalytics`` instance the
-        no-op is logged as a warning: the original binding stays active, so the
-        second client's identity/extra/config would silently never apply.
+        Re-instrumenting an already-bound server is a no-op — including through
+        its other view, since a ``FastMCP`` and its ``_mcp_server`` are one
+        server. When the second call comes from a *different*
+        ``AmplitudeMCPAnalytics`` instance the no-op is logged as a warning: the
+        original binding stays active, so the second client's
+        identity/extra/config would silently never apply.
 
         Example::
 
@@ -439,8 +443,22 @@ class AmplitudeMCPAnalytics:
             analytics.instrument_server(mcp, auth_type="oauth")  # before run
             mcp.run()  # transport auto-detected
         """
-        marker = getattr(server, _INSTRUMENTED_ATTR, None)
-        if marker is not None:
+        # Narrow FIRST, then check the marker on BOTH views. A host can hand us
+        # either a FastMCP wrapper or its low-level `_mcp_server` — two views of
+        # one server that share a single `run`, so the run wrapper is installed
+        # once and is itself idempotent. Marking only the object we were handed
+        # would let `instrument_server(mcp)` followed by
+        # `instrument_server(mcp._mcp_server)` (in either order) skip both the
+        # no-op guard and the different-client warning: the second call finds no
+        # marker, installs nothing (run is already wrapped), and leaves that
+        # client looking configured while the first binding serves every event.
+        low_level, tool_manager = unwrap_server(server)
+        views: tuple[Any, ...] = (server,) if low_level is server else (server, low_level)
+
+        for view in views:
+            marker = getattr(view, _INSTRUMENTED_ATTR, None)
+            if marker is None:
+                continue
             # Same client re-binding (a defensive double call) is silent; a
             # second client is a real misconfiguration worth surfacing.
             if not (isinstance(marker, weakref.ReferenceType) and marker() is self):
@@ -450,8 +468,10 @@ class AmplitudeMCPAnalytics:
                     "binding stays active."
                 )
             return server
-        low_level, tool_manager = unwrap_server(server)
-        setattr(server, _INSTRUMENTED_ATTR, weakref.ref(self))
+        for view in views:
+            # Each view keeps its own weakref (never a strong one — the marker
+            # must not keep a client alive).
+            setattr(view, _INSTRUMENTED_ATTR, weakref.ref(self))
 
         logger = get_logger()
         sanitize = self.config.sanitize_error_message
@@ -540,7 +560,7 @@ class AmplitudeMCPAnalytics:
                 tool_count=len(tools),
                 tool_names=names if names else None,
                 duration_ms=outcome["duration_ms"],
-                response_size_bytes=result_byte_size(result) if result is not None else None,
+                response_size_bytes=payload_byte_size(result) if result is not None else None,
                 error_message=tool_error.message if tool_error is not None else None,
                 error_code=tool_error.code if tool_error is not None else None,
                 error_type=tool_error.type if tool_error is not None else None,
@@ -578,7 +598,7 @@ class AmplitudeMCPAnalytics:
             # `isError` result when the SDK produced one, else the JSON-RPC
             # error envelope reconstructed from the raise.
             if result is not None:
-                response_size = result_byte_size(result)
+                response_size = payload_byte_size(result)
             else:
                 request_context = current_request_context()
                 response_size = byte_size(
@@ -667,17 +687,29 @@ class AmplitudeMCPAnalytics:
         return server
 
     def flush(self) -> Any:
-        """Flush the underlying client; returns its (client-specific) result."""
+        """Flush the underlying client; returns its (client-specific) result.
+
+        The unflushed accounting settles only *after* the underlying flush
+        returns. A raising flush means the events are still queued, so the
+        serverless exit warning has to stay armed — clearing the counters first
+        (what the Node SDK does) permanently silences the one warning that
+        tells a Lambda author their telemetry never left the process. The
+        exception still propagates: flush is the caller's explicit act, not
+        best-effort emission.
+        """
+        result = self._amplitude.flush()
         settle_unflushed_count(self._track_count_since_flush)
         self._track_count_since_flush = 0
-        return self._amplitude.flush()
+        return result
 
     def shutdown(self) -> None:
-        """Settle unflushed accounting; tear down the underlying client only if
-        this SDK created it (api_key path) — never a caller-supplied client."""
-        settle_unflushed_count(self._track_count_since_flush)
-        self._track_count_since_flush = 0
+        """Tear down the underlying client only if this SDK created it (api_key
+        path) — never a caller-supplied client — then settle unflushed
+        accounting. Same ordering rule as :meth:`flush`: a teardown that raises
+        leaves the events unsettled and the exit warning armed."""
         if self._owns_client:
             shutdown = getattr(self._amplitude, "shutdown", None)
             if callable(shutdown):
                 shutdown()
+        settle_unflushed_count(self._track_count_since_flush)
+        self._track_count_since_flush = 0

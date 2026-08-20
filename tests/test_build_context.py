@@ -11,13 +11,18 @@ message may carry."""
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from amplitude_mcp_analytics import McpAnchor, McpClientInfo
 from amplitude_mcp_analytics.core.build_context import (
     _parse_trace_id,
     _request_session_id,
+    _request_traceparent,
     _resolve_anchor,
     build_server_context,
     resolve_transport_evidence,
@@ -28,6 +33,9 @@ from conftest import server_ctx
 TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 TRACEPARENT = f"00-{TRACE_ID}-00f067aa0ba902b7-01"
 
+META_TRACE_ID = "0af7651916cd43dd8448eb211c80319c"
+META_TRACEPARENT = f"00-{META_TRACE_ID}-b7ad6b7169203331-01"
+
 
 def http_request(
     headers: dict[str, str] | None = None,
@@ -36,9 +44,15 @@ def http_request(
     return SimpleNamespace(headers=headers, query_params=query_params)
 
 
-def request_context(request: Any = None) -> Any:
+def request_context(request: Any = None, meta: Any = None) -> Any:
     """The duck-typed slice of the SDK's RequestContext these helpers read."""
-    return SimpleNamespace(request=request)
+    return SimpleNamespace(request=request, meta=meta)
+
+
+def request_meta(**values: Any) -> Any:
+    """A stand-in for ``RequestParams.Meta`` (extra='allow'), whose unknown keys
+    the SDK exposes as plain attributes."""
+    return SimpleNamespace(**values)
 
 
 # --- resolve_transport_evidence ---------------------------------------------
@@ -96,6 +110,88 @@ def test_rejects_the_all_zero_trace_id() -> None:
     # All-zero is the W3C "invalid" sentinel — anchoring on it would stitch
     # unrelated requests together.
     assert _parse_trace_id(f"00-{'0' * 32}-00f067aa0ba902b7-01") is None
+
+
+@pytest.mark.parametrize(
+    ("case", "traceparent"),
+    [
+        # A 32-hex second field is NOT enough: the whole header has to be well
+        # formed before its trace id becomes a correlation key, or any string
+        # that merely contains one stitches unrelated requests together.
+        ("trailing junk field", f"00-{TRACE_ID}-00f067aa0ba902b7-01-junk"),
+        ("all-zero parent id", f"00-{TRACE_ID}-{'0' * 16}-01"),
+        ("short parent id", f"00-{TRACE_ID}-00f067-01"),
+        ("long parent id", f"00-{TRACE_ID}-00f067aa0ba902b7ff-01"),
+        ("non-hex parent id", f"00-{TRACE_ID}-00f067aa0ba902bz-01"),
+        ("forbidden ff version", f"ff-{TRACE_ID}-00f067aa0ba902b7-01"),
+        ("short version", f"0-{TRACE_ID}-00f067aa0ba902b7-01"),
+        ("non-hex version", f"zz-{TRACE_ID}-00f067aa0ba902b7-01"),
+        ("non-hex flags", f"00-{TRACE_ID}-00f067aa0ba902b7-zz"),
+        ("short flags", f"00-{TRACE_ID}-00f067aa0ba902b7-1"),
+        ("empty flags field", f"00-{TRACE_ID}-00f067aa0ba902b7-"),
+        ("missing flags field", f"00-{TRACE_ID}-00f067aa0ba902b7"),
+    ],
+)
+def test_rejects_a_traceparent_whose_full_w3c_shape_is_invalid(
+    case: str, traceparent: str
+) -> None:
+    assert _parse_trace_id(traceparent) is None, case
+
+
+def test_a_valid_traceparent_still_yields_the_same_anchor_value() -> None:
+    # Cross-SDK parity guard: tightening the parser must not move the anchor
+    # value for a well-formed header, or Python and Node would derive different
+    # device ids from the same trace.
+    assert _parse_trace_id(TRACEPARENT) == TRACE_ID
+    assert _parse_trace_id(f"  {TRACEPARENT}  ") == TRACE_ID  # surrounding space
+    assert _parse_trace_id(f"01-{TRACE_ID}-00f067aa0ba902b7-00") == TRACE_ID  # future version
+    assert _resolve_anchor("streamable-http", None, None, TRACEPARENT) == McpAnchor(
+        type="trace", value=TRACE_ID
+    )
+
+
+# --- _request_traceparent: HTTP header first, `_meta` as the fallback ---------
+
+
+def test_the_traceparent_header_is_read() -> None:
+    # A normally propagated W3C header is the transport-level truth for this
+    # hop; ignoring it (Node reads `_meta` only) drops stateless HTTP callers
+    # onto a fresh anonymous anchor, which the default skip rule then drops.
+    rc = request_context(http_request(headers={"traceparent": TRACEPARENT}))
+    assert _request_traceparent(rc) == TRACEPARENT
+    assert _resolve_anchor("streamable-http", None, None, _request_traceparent(rc)) == McpAnchor(
+        type="trace", value=TRACE_ID
+    )
+
+
+def test_the_traceparent_header_wins_over_meta() -> None:
+    rc = request_context(
+        http_request(headers={"traceparent": TRACEPARENT}),
+        meta=request_meta(traceparent=META_TRACEPARENT),
+    )
+    assert _request_traceparent(rc) == TRACEPARENT
+
+
+def test_meta_is_the_fallback_when_no_header_is_present() -> None:
+    # stdio and any HTTP hop without the header keep the `_meta` convention.
+    meta = request_meta(traceparent=META_TRACEPARENT)
+    assert _request_traceparent(request_context(http_request(headers={}), meta)) == META_TRACEPARENT
+    # No HTTP request at all (stdio) — `_meta` is the only source there.
+    assert _request_traceparent(request_context(None, meta)) == META_TRACEPARENT
+
+
+def test_a_malformed_header_yields_to_a_valid_meta_value() -> None:
+    # A broken header is not evidence that the in-band value is stale.
+    rc = request_context(
+        http_request(headers={"traceparent": "not-a-traceparent"}),
+        meta=request_meta(traceparent=META_TRACEPARENT),
+    )
+    assert _request_traceparent(rc) == META_TRACEPARENT
+
+
+def test_no_traceparent_anywhere_is_none() -> None:
+    assert _request_traceparent(None) is None
+    assert _request_traceparent(request_context(http_request(headers={}))) is None
 
 
 # --- _resolve_anchor ladder ---------------------------------------------------
@@ -227,3 +323,71 @@ def test_outside_a_request_frame_the_scope_session_id_feeds_the_anchor() -> None
     base = server_ctx(transport="streamable-http", identity=None)
     resolved = build_server_context(base, scope_session_id="sess-captured")
     assert resolved.anchor == McpAnchor(type="session-id", value="sess-captured")
+
+
+# --- build_server_context inside a request frame -------------------------------
+
+
+@contextmanager
+def request_frame(rc: Any) -> Iterator[None]:
+    """Set the SDK's ambient ``request_ctx`` around a block, the way a live
+    handler dispatch does."""
+    from mcp.server.lowlevel.server import request_ctx
+
+    token = request_ctx.set(rc)
+    try:
+        yield
+    finally:
+        request_ctx.reset(token)
+
+
+def test_a_stateless_request_anchors_on_the_propagated_traceparent_header() -> None:
+    # End-to-end for the header source: a stateless HTTP request carrying only
+    # the standard W3C header must correlate, not fall to the anonymous floor
+    # (which `should_emit` then drops by default).
+    base = server_ctx(transport="streamable-http", identity=None)
+
+    with request_frame(request_context(http_request(headers={"traceparent": TRACEPARENT}))):
+        resolved = build_server_context(base)
+
+    assert resolved.anchor == McpAnchor(type="trace", value=TRACE_ID)
+    assert resolved.identity.resolved_from == "anchor"
+    assert resolved.identity.user_id == f"trace:{TRACE_ID}"
+
+
+def test_a_stateless_request_still_anchors_on_the_meta_traceparent() -> None:
+    # The Node-compatible in-band convention keeps working unchanged.
+    base = server_ctx(transport="streamable-http", identity=None)
+
+    with request_frame(
+        request_context(http_request(headers={}), meta=request_meta(traceparent=META_TRACEPARENT))
+    ):
+        resolved = build_server_context(base)
+
+    assert resolved.anchor == McpAnchor(type="trace", value=META_TRACE_ID)
+
+
+def test_a_transport_session_id_still_outranks_a_traceparent_header() -> None:
+    # Ladder order is unchanged: a real session id is a stronger anchor than
+    # trace context, header or not.
+    base = server_ctx(transport="streamable-http", identity=None)
+
+    with request_frame(
+        request_context(
+            http_request(headers={"mcp-session-id": "sess-1", "traceparent": TRACEPARENT})
+        )
+    ):
+        resolved = build_server_context(base)
+
+    assert resolved.anchor == McpAnchor(type="session-id", value="sess-1")
+
+
+def test_a_malformed_traceparent_header_falls_to_the_anonymous_floor() -> None:
+    base = server_ctx(transport="streamable-http", identity=None)
+    header = {"traceparent": f"00-{TRACE_ID}-0000000000000000-01-junk"}
+
+    with request_frame(request_context(http_request(headers=header))):
+        resolved = build_server_context(base)
+
+    assert resolved.anchor.type == "anonymous"
+    assert resolved.identity.resolved_from == "anonymous"

@@ -36,7 +36,19 @@ from .mcp import (
 
 __all__ = ["build_server_context", "build_tool_context", "resolve_transport_evidence"]
 
-_TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+# The complete W3C `traceparent` shape: `version-traceid-parentid-flags`, all
+# hex, exactly four fields. Anything looser (extra trailing fields, a truncated
+# parent id) is a malformed header, not a correlation key — see _parse_trace_id.
+# Case-insensitive by tolerance: the spec mandates lowercase, but a
+# case-correct-otherwise header is far more likely a sloppy producer than an
+# unrelated value, and the parsed id is lowercased for cross-SDK parity.
+_TRACEPARENT_RE = re.compile(
+    r"^(?P<version>[0-9a-f]{2})"
+    r"-(?P<trace_id>[0-9a-f]{32})"
+    r"-(?P<parent_id>[0-9a-f]{16})"
+    r"-(?P<flags>[0-9a-f]{2})$",
+    re.IGNORECASE,
+)
 
 
 def resolve_transport_evidence(request: Any) -> str | None:
@@ -67,19 +79,35 @@ def resolve_transport_evidence(request: Any) -> str | None:
 
 def _parse_trace_id(traceparent: Any) -> str | None:
     """Parse the trace-id (2nd field, 32 hex chars) from a W3C ``traceparent``:
-    ``version-traceid-parentid-flags``. ``None`` if absent, malformed, or
-    all-zero. @internal"""
+    ``version-traceid-parentid-flags``. ``None`` if absent or malformed.
+
+    The **whole** header must be well formed before its trace id becomes a
+    correlation anchor — validating only the trace-id field would let
+    ``00-<trace-id>-0000000000000000-01-junk`` (or any other malformed value
+    that happens to carry 32 hex in the second position) stitch unrelated
+    requests together under one identity. Rejected: anything but exactly four
+    hyphen-separated fields (a future spec version that appends fields would
+    have to be allowed for here deliberately), a non-hex or wrong-length
+    field, the ``ff`` version (forbidden by the spec), and the all-zero
+    trace-id or parent-id sentinels ("invalid" per W3C).
+
+    A **valid** header still yields the identical lowercase 32-hex trace id the
+    Node SDK produces, so cross-SDK correlation is unchanged. @internal
+    """
     if not isinstance(traceparent, str):
         return None
-    parts = traceparent.strip().split("-")
-    if len(parts) < 4:
+    match = _TRACEPARENT_RE.match(traceparent.strip())
+    if match is None:
         return None
-    trace_id = parts[1]
-    if not _TRACE_ID_RE.match(trace_id):
+    # `ff` is explicitly forbidden; any other version number is accepted so a
+    # future revision still correlates (only its four-field form — a version
+    # that appends fields would need a deliberate revisit here).
+    if match.group("version").lower() == "ff":
         return None
-    if trace_id == "0" * 32:
+    trace_id = match.group("trace_id").lower()
+    if trace_id == "0" * 32 or match.group("parent_id") == "0" * 16:
         return None
-    return trace_id.lower()
+    return trace_id
 
 
 def _request_session_id(request_context: Any | None, scope_session_id: str | None) -> str | None:
@@ -102,6 +130,28 @@ def _request_session_id(request_context: Any | None, scope_session_id: str | Non
     return scope_session_id
 
 
+def _request_traceparent(request_context: Any | None) -> Any:
+    """The W3C ``traceparent`` candidate for this request: the standard HTTP
+    header first, MCP ``_meta`` as the fallback.
+
+    The header is the transport-level truth for this hop — it is what every
+    W3C-compliant client, proxy, and tracing SDK propagates automatically,
+    while ``_meta.traceparent`` is an in-band convention an MCP client has to
+    opt into. Reading only ``_meta`` (what the Node SDK does) loses correlation
+    for normally-instrumented stateless HTTP callers, and a lost anchor means a
+    fresh anonymous floor — i.e. a dropped event by default.
+
+    A header that fails :func:`_parse_trace_id` yields to ``_meta`` rather than
+    poisoning the request: a malformed header is not evidence that the ``_meta``
+    value is stale. stdio has no HTTP request, so this reduces to ``_meta``
+    there. @internal
+    """
+    header = read_request_header(request_context, "traceparent")
+    if _parse_trace_id(header) is not None:
+        return header
+    return request_meta_value(request_context, "traceparent")
+
+
 def _resolve_anchor(
     transport: str,
     session_id: str | None,
@@ -115,7 +165,9 @@ def _resolve_anchor(
     - **HTTP, host-managed sessions** — a session-id anchor bound via
       ``instrument_server(session_id=...)`` when the transport carries none.
     - **HTTP, stateless** (no session id anywhere) → W3C trace context if
-      propagated, else an anonymous per-request floor (aggregate-only).
+      propagated (``traceparent`` header, else ``_meta`` — see
+      :func:`_request_traceparent`), else an anonymous per-request floor
+      (aggregate-only).
 
     A session id is never assumed — its absence selects the stateless branch.
     @internal
@@ -207,7 +259,7 @@ def build_server_context(
         server_ctx.transport,
         _request_session_id(request_context, scope_session_id),
         server_ctx.anchor,
-        request_meta_value(request_context, "traceparent"),
+        _request_traceparent(request_context),
     )
 
     resolved = resolve_identity_from_chain(
