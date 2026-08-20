@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amplitude-mcp-analytics"
+version = "0.1.0"
+description = "Amplitude MCP Analytics SDK - MCP server usage tracking for Amplitude Analytics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Amplitude" }]
+keywords = ["amplitude", "analytics", "mcp", "model-context-protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+# `amplitude-analytics` is a hard dependency: Node declares it a *required*
+# peer, and the closest Python equivalent of a required peer is a plain runtime
+# dep (an extra would make the api_key path fail at construction for anyone who
+# forgot it). The MCP SDK stays out: coupling to it is structural/duck-typed and
+# every consumer is an MCP server that already depends on it, so pinning a range
+# here would only risk fighting theirs. Supported MCP SDK range: mcp>=1.16,<2
+# (see README) — declared in the dev group for the test suite.
+dependencies = ["amplitude-analytics>=1.2"]
+
+[project.urls]
+Homepage = "https://github.com/amplitude/Amplitude-MCP-Analytics-Python"
+Documentation = "https://github.com/amplitude/Amplitude-MCP-Analytics-Python#readme"
+Repository = "https://github.com/amplitude/Amplitude-MCP-Analytics-Python"
+Issues = "https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues"
+
+[dependency-groups]
+dev = [
+  "mcp>=1.16,<2",
+  "anyio>=4.0",
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "pyright>=1.1.390",
+  "ruff>=0.8.0",
+  "pyyaml>=6",
+]
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amplitude_mcp_analytics"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Mirrors the Node repo's Biome setup: error-level correctness rules only,
+# no formatter enforcement.
+select = [
+  "E4", "E7", "E9", # pycodestyle errors
+  "F",              # pyflakes (unused imports/variables, use-before-def)
+  "I",              # import sorting
+  "UP",             # pyupgrade
+  "B",              # bugbear
+]
+ignore = [
+  "B008", # function call in default arg — common in typed APIs
+]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+reportPrivateUsage = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportMissingTypeStubs = false
