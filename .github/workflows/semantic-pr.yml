@@ -1,9 +1,14 @@
 name: Semantic PR
 
 # Enforces Conventional Commit PR titles (see CONTRIBUTING.md). This is
-# load-bearing: publish.yml's release gate matches on the literal
-# "chore(release): v" title prefix, so a malformed title isn't just a style
-# nit, it can silently break the release flow.
+# load-bearing for versioning: we squash-merge, so the PR title becomes the
+# commit message on main, and that message is the only input release-please
+# parses to decide the next version and write the changelog. A wrong type is
+# not a style nit — `chore:` on a user-visible fix ships no release at all.
+#
+# Keep the pattern permissive enough for release-please's own Release PR title
+# ("chore(main): release 1.2.3"), which lands here like any other PR because
+# release-please authors it with a GitHub App token.
 #
 # No third-party actions here by design (org policy allows only actions/* and
 # amplitude/*): a single bash step validates the title directly, so there's
@@ -55,7 +60,7 @@ jobs:
           Examples:
             feat: add session replay support
             fix(delivery): retry on 5xx
-            chore(release): v1.2.0
+            chore(main): release 1.2.0
 
           See CONTRIBUTING.md for details.
           EOF

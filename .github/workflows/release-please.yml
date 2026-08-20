@@ -1,0 +1,122 @@
+name: release-please
+
+# Releases are fully automated from conventional-commit history: release-please
+# keeps a Release PR open against `main` (bumping `[project] version` in
+# pyproject.toml and prepending to CHANGELOG.md), and merging that PR tags the
+# release and publishes the built artifacts to PyPI.
+#
+# ---------------------------------------------------------------------------
+# INFRA MUST PROVISION THE FOLLOWING — NOTHING HERE IS SELF-CONFIGURING.
+# Until all three exist, both jobs below fail (they do not silently no-op):
+#
+#   1. A GitHub Actions environment named `pypi-release` on
+#      amplitude/Amplitude-MCP-Analytics-Python. Both jobs run in it. It must
+#      NOT carry a required-reviewer protection rule unless a human approving
+#      every push to main is intended — the rule gates the `release-please`
+#      job too, not just publishing.
+#
+#   2. Two secrets on that environment (not repo- or org-level secrets):
+#        - AMPLITUDE_DEV_EXP_APP_ID
+#        - AMPLITUDE_DEV_EXP_PRIVATE_KEY
+#      Same GitHub App credentials Amplitude-TypeScript / developer-cli use on
+#      their `npm-release` environment; infra copies them across.
+#
+#   3. A PyPI Trusted Publisher on the `amplitude-mcp-analytics` project:
+#        owner:       amplitude
+#        repository:  Amplitude-MCP-Analytics-Python
+#        workflow:    release-please.yml     <- this file's name; renaming the
+#                                              file breaks publishing
+#        environment: pypi-release
+#      The project has never been published, so this has to be created as a
+#      PyPI *pending* publisher before the first release, then it converts to a
+#      normal publisher on first upload. There is no PyPI API token anywhere in
+#      this repo and none should be added.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  # OIDC token for PyPI Trusted Publishing (`uv publish`). Declared at the
+  # workflow level because that is the scope uv's token exchange reads.
+  id-token: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    # AMPLITUDE_DEV_EXP_* live on the pypi-release environment (mirroring
+    # developer-cli's npm-release), not repo/org secrets.
+    environment: pypi-release
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      # Mint a GitHub App installation token so release-please's PRs trigger
+      # downstream workflows (GITHUB_TOKEN-authored events do not, by design,
+      # which would leave test.yml and semantic-pr.yml unrun and the Release PR
+      # BLOCKED behind required checks — or merged with no CI at all).
+      - uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        id: app-token
+        with:
+          app-id: ${{ secrets.AMPLITUDE_DEV_EXP_APP_ID }}
+          private-key: ${{ secrets.AMPLITUDE_DEV_EXP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-24.04
+    needs: release-please
+    # Only the push that merges a Release PR sets this; every other push to
+    # main lands here as 'false' and the job is skipped.
+    if: needs.release-please.outputs.releases_created == 'true'
+    environment: pypi-release
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      # uv is installed from PyPI via the runner's Python (no third-party setup
+      # action), the same way test.yml does it.
+      - name: Install uv
+        run: python3 -m pip install --quiet uv
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # The same gates test.yml enforces on every PR, re-run against the merged
+      # release commit: a red main must not reach PyPI, and unlike a tag push
+      # this artifact cannot be replaced once uploaded.
+      - name: Type check
+        run: uv run pyright src
+
+      - name: Test with coverage
+        run: uv run pytest --cov=amplitude_mcp_analytics -q
+
+      - name: Build the package
+        run: uv build
+
+      # Authenticates to PyPI via OIDC Trusted Publishing: `always` makes uv
+      # exchange the workflow's id-token for a short-lived PyPI token and fail
+      # loudly if that exchange is not available, rather than falling back to
+      # an unauthenticated (or credential-scavenging) upload the way the
+      # default `automatic` would. No UV_PUBLISH_TOKEN / PYPI_TOKEN exists.
+      #
+      # uv also uploads PEP 740 attestations for the wheel and sdist by
+      # default under trusted publishing.
+      #
+      # pypa/gh-action-pypi-publish would do the same thing, but the org's
+      # CI-pinning policy restricts third-party `uses:` lines and uv is already
+      # this repo's only packaging tool.
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always

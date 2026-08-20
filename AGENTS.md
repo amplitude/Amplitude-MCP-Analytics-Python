@@ -106,6 +106,19 @@ divergences. Rules:
   poetry.
 - **PRs:** link the ticket, reference related PRs, and explicitly call out what is
   intentionally out of scope or stubbed.
+- **PR titles set the version.** We squash-merge, so the title becomes the
+  commit message release-please parses: `!` or a `BREAKING CHANGE:` footer →
+  major, `feat:` → minor, `fix:`/`perf:`/`docs:`/`revert:` → patch, and
+  `chore:`/`test:`/`refactor:`/`build:`/`ci:` → no release. Choose the type by
+  user-visible impact, and write the title as the changelog line it will
+  become. `semantic-pr.yml` enforces the shape, not the accuracy.
+- **Never hand-edit the version.** `[project] version` in `pyproject.toml`,
+  `CHANGELOG.md` entries, and `.release-please-manifest.json` are owned by
+  release-please (`.github/workflows/release-please.yml`); merging its Release
+  PR is what tags the release and publishes to PyPI over OIDC Trusted
+  Publishing. No PyPI token exists in this repo — don't add one. Release
+  mechanics and the infra prerequisites are in `CONTRIBUTING.md` and that
+  workflow's header comment.
 
 ## Verify before you finish
 

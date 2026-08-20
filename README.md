@@ -478,3 +478,7 @@ uv run pytest
 uv run pyright src
 uv run ruff check src tests
 ```
+
+Releases are automated: conventional-commit PR titles drive the version bump,
+release-please keeps a Release PR open against `main`, and merging it publishes
+to PyPI. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
