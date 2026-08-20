@@ -1,4 +1,4 @@
-"""SDK configuration. Ported from the Node SDK's ``src/config.ts``."""
+"""SDK configuration: autocapture toggles and the top-level config object."""
 
 from __future__ import annotations
 

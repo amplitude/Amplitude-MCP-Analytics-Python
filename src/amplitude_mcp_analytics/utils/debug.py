@@ -1,6 +1,3 @@
-# Ported from amplitude/Amplitude-MCP-Analytics-Node src/utils/debug.ts
-# (itself vendored from amplitude/Amplitude-AI-Node @ 97ea346).
-
 """Debug/dry-run line formatting. Internal."""
 
 from __future__ import annotations

@@ -43,7 +43,9 @@ stateless HTTP = trace -> anonymous floor. No session id is ever assumed."""
 
 McpTransport = Literal["stdio", "streamable-http", "sse"]
 """MCP transport. ``sse`` (the deprecated HTTP+SSE transport) is a Python-SDK
-addition to the cross-SDK taxonomy — the Node SDK emits only the first two."""
+addition to the shared cross-SDK taxonomy, since the Python MCP SDK still
+supports that transport natively; the value is additive and does not disturb
+the two transports every SDK reports."""
 
 McpRequestMethod = Literal[
     "tools/call",
@@ -166,7 +168,7 @@ class McpToolMeta:
     properties)."""
     meta: dict[str, Any] = field(default_factory=dict)
     """Free-form metadata; forward-compatible and the home for server-specific
-    fields (the Node SDK's index signature). ``tags`` (list of str) and
+    fields with no dedicated top-level slot. ``tags`` (list of str) and
     ``category`` (str) are read from here for the reserved
     ``[MCP] Tool Tags`` / ``[MCP] Tool Category`` properties."""
 

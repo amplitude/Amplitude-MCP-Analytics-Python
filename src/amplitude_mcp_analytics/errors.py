@@ -1,9 +1,9 @@
 """Tool-error taxonomy, classification, and privacy-preserving hashing.
 
-Ported from the Node SDK's ``src/errors.ts``. The wire taxonomy
-(:data:`McpToolErrorType`) is identical across SDKs; the *classification
-heuristics* are re-derived for Python exception conventions (see
-:func:`classify_error`).
+The wire taxonomy (:data:`McpToolErrorType`) is a closed, cross-SDK set so
+analytics grouping stays consistent regardless of which SDK emitted an event;
+the *classification heuristics* that assign it are Python-native, built around
+this language's own exception conventions (see :func:`classify_error`).
 """
 
 from __future__ import annotations
@@ -195,8 +195,8 @@ def _http_status_from(err: BaseException) -> int | None:
 def _is_timeout(err: BaseException) -> bool:
     # TimeoutError covers socket.timeout (3.10+) and asyncio.TimeoutError
     # (3.11+); asyncio.TimeoutError is checked separately for 3.10.
-    # CancelledError is the closest analogue of Node's AbortError (an abort
-    # signal interrupting the call).
+    # CancelledError is treated the same way: an abort signal interrupting the
+    # call is, from the caller's perspective, indistinguishable from a timeout.
     return isinstance(err, (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError))
 
 
@@ -213,7 +213,7 @@ def _network_code(err: BaseException) -> str | None:
 def classify_error(err: Any) -> McpToolError:
     """Classify a raised value into the closed :data:`McpToolErrorType` set.
 
-    Mirrors the Node SDK's ladder with Python idioms: timeout/cancellation →
+    A fixed priority ladder built on Python idioms: timeout/cancellation →
     ``timeout``; connection/DNS failures → ``transport_error``; HTTP 429 →
     ``rate_limited`` (with ``retry_suggested``); any other exception →
     ``thrown_exception``; a non-exception value → ``unknown``.

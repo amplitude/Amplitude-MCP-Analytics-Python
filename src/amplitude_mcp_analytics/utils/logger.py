@@ -1,8 +1,6 @@
-# Ported from amplitude/Amplitude-MCP-Analytics-Node src/utils/logger.ts
-# (itself vendored from amplitude/Amplitude-AI-Node @ 97ea346).
-# Python adaptation: the stdlib `logging.Logger` replaces the console-backed
-# Logger interface, and the SDK owns a single namespace of its own rather than
-# borrowing the injected Amplitude client's logger (see get_logger).
+# The stdlib `logging.Logger` backs the SDK's logger. The SDK owns a single
+# namespace of its own rather than borrowing the injected Amplitude client's
+# logger (see get_logger).
 
 """Internal logger resolution. Not part of the public package surface."""
 
@@ -30,7 +28,8 @@ def get_logger() -> logging.Logger:
     SDK names itself and lets the host route, filter, or silence
     ``amplitude_mcp_analytics`` on its own terms. Warnings and errors still
     surface through logging's last-resort stderr handler when the host has
-    configured nothing, matching the Node default of printing only warn/error.
+    configured nothing — that handler's built-in floor is ``WARNING``, so
+    nothing quieter leaks out by default.
 
     @internal
     """

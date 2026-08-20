@@ -10,8 +10,9 @@ Ambient is the fallback, not the default: the store is lost across boundaries
 that escape the :func:`run_with_context` scope, is harder to test, and has
 serverless pitfalls. When in doubt, pass ``ctx``.
 
-(Ports the Node SDK's ``src/context/als.ts``; ``AsyncLocalStorage`` becomes a
-``ContextVar``.)
+Implemented with a single module-level :class:`ContextVar`, set and reset via
+a token in a ``try``/``finally`` around the scope, so nested scopes and
+concurrent tasks each see their own value.
 """
 
 from __future__ import annotations
@@ -167,8 +168,9 @@ def set_rationale(rationale: str) -> None:
             "Call it inside an instrumented tool handler or a run_with_context() block."
         )
 
-    # Runtime guard kept for untyped callers (Node parity: non-string or empty
-    # values are ignored).
+    # Runtime guard kept for untyped callers: rationale is best-effort
+    # telemetry, not part of the tool's return contract, so a non-string or
+    # empty value is silently ignored rather than raising.
     if not isinstance(rationale, str) or len(rationale) == 0:  # pyright: ignore[reportUnnecessaryIsInstance]
         return
 
@@ -179,9 +181,10 @@ def set_rationale(rationale: str) -> None:
     elif isinstance(ctx, McpToolContext):
         ctx.request = McpRequestInfo(rationale=truncated)
     else:
-        # A server-scope ctx has no `request` field; attach one dynamically to
-        # preserve the Node semantics (the ambient object simply gains the
-        # value — it is only ever read from tool-scope lowering).
+        # A server-scope ctx has no `request` field in its dataclass; attach
+        # one dynamically instead. This is safe because `request` is only ever
+        # read back during tool-scope lowering, so a server-scope ctx simply
+        # carrying the extra attribute is harmless.
         setattr(ctx, "request", McpRequestInfo(rationale=truncated))  # noqa: B010
 
 

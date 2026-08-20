@@ -305,7 +305,7 @@ class AmplitudeMCPAnalytics:
         """Instrument an MCP tool handler — the single tool-instrumentation
         entry point. Two spellings:
 
-        Node-parity call::
+        Direct call (handler and meta passed positionally)::
 
             mcp.add_tool(analytics.instrument_tool(search, McpToolMeta(name="search")))
 
@@ -691,11 +691,11 @@ class AmplitudeMCPAnalytics:
 
         The unflushed accounting settles only *after* the underlying flush
         returns. A raising flush means the events are still queued, so the
-        serverless exit warning has to stay armed — clearing the counters first
-        (what the Node SDK does) permanently silences the one warning that
-        tells a Lambda author their telemetry never left the process. The
-        exception still propagates: flush is the caller's explicit act, not
-        best-effort emission.
+        serverless exit warning has to stay armed — clearing the counters
+        first would permanently silence the one warning that tells a Lambda
+        author their telemetry never left the process. The exception still
+        propagates: flush is the caller's explicit act, not best-effort
+        emission.
         """
         result = self._amplitude.flush()
         settle_unflushed_count(self._track_count_since_flush)

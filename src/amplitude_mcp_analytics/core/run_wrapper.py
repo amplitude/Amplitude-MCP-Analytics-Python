@@ -2,7 +2,7 @@
 ``connect(transport)`` in the Python SDK — one ``run()`` call is one
 connection/session, and the transport exists only as the message streams).
 
-Three jobs, mirroring Node's wrapped ``connect``:
+This wrapper does three jobs:
 
 1. **Scope**: create a fresh :class:`ServerScope` per run and set it into the
    scope ContextVar around the delegated ``run`` — anyio task groups copy the
@@ -18,7 +18,9 @@ Three jobs, mirroring Node's wrapped ``connect``:
 3. **Session end**: ``run()`` returning or raising is the transport closing —
    emit ``[MCP] Session Ended`` from the ``finally`` when a session was
    initialized. Stateless runs (``stateless=True``) never handshake and are
-   excluded from session lifecycle entirely, matching Node's gating.
+   excluded from session lifecycle entirely — the manager spins one run per
+   HTTP request, so there is no persistent session for
+   ``[MCP] Session Initialized`` / ``[MCP] Session Ended`` to bracket.
 """
 
 from __future__ import annotations
@@ -197,8 +199,8 @@ def install_run_wrapper(
         install_hooks()
 
         # Stateless runs never handshake: the manager spins one run per HTTP
-        # request, so session lifecycle is meaningless there (Node parity:
-        # stateless HTTP emits no session events).
+        # request, so session lifecycle is meaningless there — no session
+        # events are emitted for this run.
         stateless = bool(kwargs.get("stateless", args[1] if len(args) >= 2 else False))
         observer_cb: Callable[[ServerScope], None] = (
             (lambda s: None) if stateless else on_initialized

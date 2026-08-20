@@ -1,12 +1,11 @@
 """Per-instrumented-server, per-run analytics scope.
 
-The Node SDK wraps every request handler in an AsyncLocalStorage frame carrying
-the binding's scope. Python needs no per-handler machinery: the wrapped
-``Server.run`` sets a single ContextVar before delegating, and because anyio's
-task group copies the caller's context at ``start_soon``, every handler task the
-SDK spawns inherits the scope — one frame per connection/run. Concurrent
-``run()`` calls on one shared ``Server`` object (stateless HTTP) each see their
-own scope, which is the same per-request-server concurrency fix.
+Python needs no per-handler machinery: the wrapped ``Server.run`` sets a single
+ContextVar before delegating, and because anyio's task group copies the
+caller's context at ``start_soon``, every handler task the SDK spawns inherits
+the scope — one frame per connection/run. Concurrent ``run()`` calls on one
+shared ``Server`` object (stateless HTTP) each see their own scope, so
+per-request servers sharing one object stay correctly isolated too.
 """
 
 from __future__ import annotations

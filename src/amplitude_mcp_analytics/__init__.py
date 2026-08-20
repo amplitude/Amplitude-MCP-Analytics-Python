@@ -1,8 +1,7 @@
 """Amplitude MCP Analytics SDK — MCP server usage tracking for Amplitude.
 
-Public surface (semver-governed; guarded by ``tests/test_smoke.py``). Mirrors
-the Node SDK's root exports in snake_case, minus the ones Python does not need
-(see ``PORTING.md``).
+Public surface (semver-governed; guarded by ``tests/test_smoke.py``). See
+``PORTING.md`` for what is intentionally not exposed here and why.
 """
 
 from importlib.metadata import PackageNotFoundError
@@ -59,10 +58,17 @@ from .tracking import (
 from .tracking.track import track_server_event, track_tool_event
 from .types import AmplitudeClientLike, AmplitudeEvent
 
+# Sentinel for "this package is not installed, so there is no metadata to read".
+# Bound through a name on purpose: release-please's python release type rewrites
+# the first dotted-version string literal assigned to `__version__` in this file
+# on every release, which would silently bump this fallback to the released
+# version. `tests/test_release_workflows.py` locks the shape.
+_UNINSTALLED_VERSION = "0.0.0"
+
 try:
     __version__ = _version("amplitude-mcp-analytics")
 except PackageNotFoundError:  # pragma: no cover — running from an uninstalled source tree
-    __version__ = "0.0.0"
+    __version__ = _UNINSTALLED_VERSION
 
 __all__ = [
     "AmplitudeClientLike",

@@ -12,14 +12,14 @@ Dispatched calls are excluded via :func:`mark_tool_call_dispatched` /
 sees, and the emit site skips marked requests, so a request never lands on
 both ``[MCP] Tool Call Response`` and ``[MCP] Tool Call Rejected``.
 
-De-dup mechanism (differs from Node): Node keys a WeakSet on the per-request
-``extra`` object; Python's ``RequestContext`` is an eq-comparing dataclass
-(unhashable), so instead the hook plants a fresh **mutable marker object** in a
-ContextVar around each delegated call. ``instrument_tool`` retrieves the marker
-from the (copied) context and mutates it — mutation, not ``ContextVar.set``, so
-the flag survives ``anyio.to_thread`` and nested task groups, whose context
-copies would strand a ``set()``. Per-request isolation holds because the hook's
-frame is ancestral to everything the handler spawns.
+De-dup mechanism: Python's ``RequestContext`` is an eq-comparing dataclass
+(unhashable), so it cannot key a set or dict directly. Instead the hook plants
+a fresh **mutable marker object** in a ContextVar around each delegated call.
+``instrument_tool`` retrieves the marker from the (copied) context and mutates
+it — mutation, not ``ContextVar.set``, so the flag survives ``anyio.to_thread``
+and nested task groups, whose context copies would strand a ``set()``.
+Per-request isolation holds because the hook's frame is ancestral to
+everything the handler spawns.
 """
 
 from __future__ import annotations

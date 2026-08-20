@@ -1,15 +1,16 @@
-# Ported from amplitude/Amplitude-MCP-Analytics-Node src/core/delivery/
-# ({proxy,hooks,serverless}.ts, themselves vendored from amplitude/Amplitude-AI-Node
-# @ 97ea346). Python adaptations:
-#   - TrackingProxy is gone: it existed only because a frozen ES module
-#     namespace cannot be monkey-patched. Python composes a plain
-#     DeliveryClient wrapper — same hooks, same ordering guarantees.
-#   - The transport-level >=400 delivery warning rides a per-event callback on
-#     each BaseEvent (the amplitude-analytics client invokes
-#     callback(event, status_code, message)) instead of mutating the caller's
-#     client-level Config.callback.
-#   - process.on('beforeExit') becomes atexit (fires once at interpreter
-#     shutdown; not on os._exit or SIGKILL — an accepted semantic difference).
+# Delivery is composed as a single plain DeliveryClient wrapper around the
+# injected client — no separate proxy layer, so the hook order and guarantees
+# documented on DeliveryClient below live in one place.
+#
+# The transport-level >=400 delivery warning rides a per-event callback on
+# each BaseEvent (the amplitude-analytics client invokes
+# callback(event, status_code, message)) rather than mutating the caller's
+# client-level Config.callback, so instrumenting a caller-supplied client never
+# overwrites a callback the host already set.
+#
+# Unflushed-event exit accounting is settled via atexit, which fires once at
+# interpreter shutdown — not on os._exit or SIGKILL, an accepted limit given
+# neither offers a reliable shutdown hook to settle accounting from.
 
 """Event delivery: dry-run, debug, short-id warnings, unflushed-event exit
 accounting, and conversion to the amplitude-analytics client. Internal."""
@@ -175,8 +176,8 @@ def _resolve_amplitude_types() -> tuple[type, type] | None:
 
 
 class DeliveryClient:
-    """Wraps the raw injected client with the delivery hooks, in the Node SDK's
-    (load-bearing) order: the dry-run gate sits outermost, so dry-run events
+    """Wraps the raw injected client with the delivery hooks in a fixed,
+    load-bearing order: the dry-run gate sits outermost, so dry-run events
     are never counted as unflushed; the counter runs only on real delivery.
 
     When the raw client is an ``amplitude.Amplitude`` instance, events are

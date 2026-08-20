@@ -3,9 +3,10 @@ the SDK's per-request ``RequestContext`` and composes the pure context
 factories. In ``core/`` (not the SDK-free public ``context/``) because it is
 SDK-aware and not public.
 
-The Node SDK resolves per-request facts from the handler ``extra`` argument;
-Python resolves them from the public ``request_ctx`` ContextVar (request id,
-``_meta``, session, and — on HTTP transports — the ASGI request with headers).
+Per-request facts — request id, ``_meta``, session, and, on HTTP transports,
+the ASGI request with headers — are read from the SDK's ambient
+``request_ctx`` ContextVar, the same seam the SDK populates once per request,
+rather than requiring the raw request object to be passed in explicitly.
 """
 
 from __future__ import annotations
@@ -91,8 +92,9 @@ def _parse_trace_id(traceparent: Any) -> str | None:
     field, the ``ff`` version (forbidden by the spec), and the all-zero
     trace-id or parent-id sentinels ("invalid" per W3C).
 
-    A **valid** header still yields the identical lowercase 32-hex trace id the
-    Node SDK produces, so cross-SDK correlation is unchanged. @internal
+    A **valid** header still yields the identical lowercase 32-hex trace id,
+    so cross-SDK trace correlation is unaffected by which side parses it.
+    @internal
     """
     if not isinstance(traceparent, str):
         return None
@@ -137,9 +139,9 @@ def _request_traceparent(request_context: Any | None) -> Any:
     The header is the transport-level truth for this hop — it is what every
     W3C-compliant client, proxy, and tracing SDK propagates automatically,
     while ``_meta.traceparent`` is an in-band convention an MCP client has to
-    opt into. Reading only ``_meta`` (what the Node SDK does) loses correlation
-    for normally-instrumented stateless HTTP callers, and a lost anchor means a
-    fresh anonymous floor — i.e. a dropped event by default.
+    opt into. Reading only ``_meta`` loses correlation for normally-instrumented
+    stateless HTTP callers, and a lost anchor means a fresh anonymous floor —
+    i.e. a dropped event by default.
 
     A header that fails :func:`_parse_trace_id` yields to ``_meta`` rather than
     poisoning the request: a malformed header is not evidence that the ``_meta``
