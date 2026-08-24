@@ -49,6 +49,14 @@ class TestNamespace:
         # a data-continuity break.
         assert str(AMP_MCP_NAMESPACE) == "f08626eb-3a5c-4f3a-bec2-227ab3178022"
 
+    def test_derivation_matches_the_node_sdk_golden_value(self) -> None:
+        # The Node SDK's test/identity.test.ts pins this same pair. If either
+        # side drifts, one of the two suites fails.
+        result = resolve_identity_from_chain(anchor=SESSION_ANCHOR)
+        assert result.identity.device_id == "5fce1aa7-c7c0-53ad-a89b-7a43e0e8dea5"
+        # What `session-id:sess-abc` derived to under NAMESPACE_OID, pre-fix.
+        assert result.identity.device_id != "1ab62820-d031-5f96-ab16-083102f13787"
+
 
 class TestResolveIdentityCallback:
     def test_uses_user_id_from_resolve_identity_when_present(self) -> None:
