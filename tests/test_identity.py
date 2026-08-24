@@ -20,6 +20,35 @@ SESSION_ANCHOR = McpAnchor(type="session-id", value="sess-abc")
 TRACE_ANCHOR = McpAnchor(type="trace", value="4bf92f3577b34da6a3ce929d0e0e4736")
 ANON_ANCHOR = McpAnchor(type="anonymous", value="aaa-bbb-ccc")
 
+# The four namespace UUIDs RFC 9562 Appendix A reserves. None of them is a
+# private namespace, so none may be used to derive device ids.
+_RFC_RESERVED_NAMESPACES = {
+    uuid.NAMESPACE_DNS,
+    uuid.NAMESPACE_URL,
+    uuid.NAMESPACE_OID,
+    uuid.NAMESPACE_X500,
+}
+
+
+class TestNamespace:
+    def test_namespace_is_not_an_rfc_reserved_constant(self) -> None:
+        # Regression: through 0.1.x both SDKs derived device ids under
+        # NAMESPACE_OID (6ba7b812-...), a globally published constant. Hashing
+        # there makes every device_id reproducible by any third party and
+        # collides with anyone else who reaches for the same reserved value.
+        assert AMP_MCP_NAMESPACE not in _RFC_RESERVED_NAMESPACES
+        assert AMP_MCP_NAMESPACE != uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+
+    def test_namespace_is_a_random_v4_uuid(self) -> None:
+        # A privately minted namespace, not derived from anything guessable.
+        assert AMP_MCP_NAMESPACE.version == 4
+
+    def test_namespace_matches_the_node_sdk(self) -> None:
+        # Cross-SDK wire contract. Changing this re-derives every anchor-derived
+        # device_id; it must be changed in both SDKs together and called out as
+        # a data-continuity break.
+        assert str(AMP_MCP_NAMESPACE) == "f08626eb-3a5c-4f3a-bec2-227ab3178022"
+
 
 class TestResolveIdentityCallback:
     def test_uses_user_id_from_resolve_identity_when_present(self) -> None:
@@ -141,8 +170,8 @@ class TestAnchorBasedIdentity:
         b = resolve_identity_from_chain(anchor=SESSION_ANCHOR)
 
         assert a.identity.device_id == b.identity.device_id
-        # RFC 9562 uuid5 in the shared cross-SDK namespace — the same anchor must
-        # yield the same device_id from either SDK.
+        # RFC 9562 uuid5 in this SDK's private namespace — the same anchor must
+        # yield the same device_id here and in the Node SDK.
         assert a.identity.device_id == str(uuid.uuid5(AMP_MCP_NAMESPACE, "session-id:sess-abc"))
 
     def test_produces_different_device_ids_for_different_anchors(self) -> None:

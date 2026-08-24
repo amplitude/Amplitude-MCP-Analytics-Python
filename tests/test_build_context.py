@@ -200,7 +200,32 @@ def test_no_traceparent_anywhere_is_none() -> None:
 def test_stdio_anchors_on_the_process() -> None:
     # Process lifetime, stable across every call of this server process.
     anchor = _resolve_anchor("stdio", None, None, None)
-    assert anchor == McpAnchor(type="process", value=str(os.getpid()))
+    assert anchor.type == "process"
+    assert anchor == _resolve_anchor("stdio", None, None, None)
+    # The pid stays readable, but it is NOT the whole value: pids are recycled
+    # per machine, so a bare pid collides across hosts (see _process_anchor_value).
+    assert anchor.value.startswith(f"{os.getpid()}-")
+    assert anchor.value != str(os.getpid())
+
+
+def test_process_anchor_carries_enough_entropy_to_not_collide_across_hosts() -> None:
+    # The random suffix is what makes the anchor globally unique. Without it,
+    # two unrelated servers that drew the same pid shared a user_id.
+    suffix = _resolve_anchor("stdio", None, None, None).value.split("-", 1)[1]
+    assert len(suffix) == 32
+    assert int(suffix, 16)  # hex, and not all zeroes
+
+
+def test_process_anchor_is_reminted_when_the_pid_changes() -> None:
+    # A forked child must not inherit its parent's identity.
+    import amplitude_mcp_analytics.core.build_context as bc
+
+    original = bc._process_anchor
+    try:
+        bc._process_anchor = (original[0] + 1 if original else 1, "999999-stale")
+        assert _resolve_anchor("stdio", None, None, None).value != "999999-stale"
+    finally:
+        bc._process_anchor = original
 
 
 def test_http_with_a_session_id_anchors_on_it() -> None:
@@ -301,7 +326,8 @@ def test_outside_a_request_frame_it_degrades_to_the_scope_values() -> None:
     resolved = build_server_context(base)
 
     assert resolved.transport == "stdio"  # inherited from the scope
-    assert resolved.anchor == McpAnchor(type="process", value=str(os.getpid()))
+    assert resolved.anchor.type == "process"
+    assert resolved.anchor.value.startswith(f"{os.getpid()}-")
     assert resolved.protocol_version == "2025-11-25"  # scope fallback used
     assert resolved.client is not None
     assert resolved.client.name == "claude"
