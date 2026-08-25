@@ -173,7 +173,7 @@ async def test_no_identity_bleed_into_an_identity_less_dispatching_server() -> N
     # stdio-shaped, so Python's ladder floors A to the process anchor instead —
     # the event emits, but MUST carry the anchor identity, never bob's. Before
     # the per-server-scope fix, A picked bob up from the singleton mirror.
-    assert events["search-a"]["user_id"] == f"process:{os.getpid()}"
+    assert events["search-a"]["user_id"].startswith(f"process:{os.getpid()}-")
     assert events["search-a"]["user_id"] != "bob@example.com"
     assert events["search-b"]["user_id"] == "bob@example.com"
 

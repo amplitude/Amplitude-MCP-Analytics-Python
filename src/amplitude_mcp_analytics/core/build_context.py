@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import uuid
 from typing import Any
 
@@ -50,6 +51,41 @@ _TRACEPARENT_RE = re.compile(
     r"-(?P<flags>[0-9a-f]{2})$",
     re.IGNORECASE,
 )
+
+
+_process_anchor_lock = threading.Lock()
+_process_anchor: tuple[int, str] | None = None
+
+
+def _process_anchor_value() -> str:
+    """The stdio anchor value for this process: the pid plus a per-process
+    random token, minted once and reused for the process lifetime.
+
+    The pid **alone** is not a safe anchor value. It is a small integer
+    recycled per machine, so two unrelated servers on two different hosts that
+    happened to draw the same pid produced the same anchor key — and the anchor
+    key is used verbatim as ``user_id`` (``process:<pid>``) as well as hashed
+    into ``device_id``. Distinct installations silently merged into one
+    Amplitude user. The random suffix makes the value globally unique while
+    keeping the pid readable in logs.
+
+    Re-minted when the pid changes so a forked child does not inherit its
+    parent's identity. @internal
+    """
+    global _process_anchor
+    pid = os.getpid()
+    cached = _process_anchor
+    if cached is not None and cached[0] == pid:
+        return cached[1]
+    with _process_anchor_lock:
+        # Re-check under the lock: without it two threads racing on first use
+        # would mint two tokens, splitting one process across two devices.
+        cached = _process_anchor
+        if cached is not None and cached[0] == pid:
+            return cached[1]
+        value = f"{pid}-{uuid.uuid4().hex}"
+        _process_anchor = (pid, value)
+        return value
 
 
 def resolve_transport_evidence(request: Any) -> str | None:
@@ -175,7 +211,7 @@ def _resolve_anchor(
     @internal
     """
     if transport == "stdio":
-        return McpAnchor(type="process", value=str(os.getpid()))
+        return McpAnchor(type="process", value=_process_anchor_value())
 
     if session_id:
         return McpAnchor(type="session-id", value=session_id)

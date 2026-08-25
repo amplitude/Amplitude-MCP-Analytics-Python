@@ -6,9 +6,29 @@ This SDK is a port of
 (v0.4.1). The **wire contract is shared**: event names, `[MCP] `-prefixed
 property names, property precedence, the anonymous-drop rule, the error-type
 taxonomy, and the anchor-derived identity math (`uuid5` over the
-`6ba7b812-9dad-11d1-80b4-00c04fd430c8` namespace) are identical, so the same
-caller produces the same `device_id` from either SDK and dashboards can slice
+`f08626eb-3a5c-4f3a-bec2-227ab3178022` namespace) are identical, so the same
+anchor produces the same `device_id` from either SDK and dashboards can slice
 both without special-casing.
+
+> **Namespace note.** Through 0.1.x both SDKs derived device ids under
+> `6ba7b812-9dad-11d1-80b4-00c04fd430c8`. That is not a private namespace: it
+> is `NameSpace_OID`, one of the four namespace UUIDs reserved by RFC 9562
+> Appendix A (`uuid.NAMESPACE_OID` in the Python standard library). Hashing
+> under a globally published constant forfeits what the namespace argument is
+> for — anyone can reproduce, and so reverse, every derived `device_id`, and
+> any other system reaching for the same reserved value collides with us. It is
+> now a randomly minted v4 namespace owned by this SDK, changed in lockstep
+> with the Node SDK.
+>
+> The `process` anchor changed with it: its value was a bare pid, and since the
+> anchor key is used verbatim as `user_id` as well as hashed into `device_id`,
+> two unrelated stdio servers on different machines that drew the same pid
+> resolved to the same Amplitude *user*. It is now `<pid>-<random hex>`, minted
+> once per process.
+>
+> Both are data-continuity breaks for anchor-derived identities. Explicit
+> identities (`set_identity`, `resolve_identity`,
+> `instrument_server(user_id=...)`) are unaffected.
 
 ## This is a fork point, not a sync target
 

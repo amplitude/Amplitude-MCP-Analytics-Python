@@ -33,10 +33,22 @@ __all__ = [
 
 _MIN_ID_LENGTH = 5
 
-# Cross-SDK namespace for anchor-derived device ids. MUST match the Node SDK's
-# AMP_MCP_NAMESPACE so the same anchor yields the same device_id from either
-# SDK (uuid5 is the RFC 9562 §5.5 SHA-1 name-based UUID).
-AMP_MCP_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+# Private namespace for anchor-derived device ids: device_id is
+# uuid5(AMP_MCP_NAMESPACE, "<anchor_type>:<anchor_value>"), per RFC 9562 §5.5.
+#
+# This is a randomly minted v4 UUID owned by this SDK, and it has to stay that
+# way. Until 0.2.0 both SDKs used 6ba7b812-9dad-11d1-80b4-00c04fd430c8, which is
+# not a private namespace at all — it is NameSpace_OID, one of the four
+# namespaces RFC 9562 Appendix A reserves (Python spells it uuid.NAMESPACE_OID).
+# Hashing under a globally published namespace forfeits the only thing the
+# namespace argument buys you: any other system that hashes a colliding name
+# under the same reserved constant derives a byte-identical id, and every
+# device_id becomes reproducible — and so reversible — by anyone who reads the
+# spec. See PORTING.md and CHANGELOG.md 0.2.0.
+#
+# Keep this value in sync with the Node SDK's AMP_MCP_NAMESPACE. Changing it
+# re-derives every anchor-derived device_id, which is a data-continuity break.
+AMP_MCP_NAMESPACE = uuid.UUID("f08626eb-3a5c-4f3a-bec2-227ab3178022")
 
 
 def anchor_device_id(anchor_key: str) -> str:
