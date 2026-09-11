@@ -228,6 +228,14 @@ class TestReleasePleaseConfiguration:
         # `amplitude-mcp-analytics-v1.2.3`.
         assert config()["packages"]["."]["include-component-in-tag"] is False
 
+    def test_breaking_changes_stay_below_1_0_0(self) -> None:
+        # Without this option release-please's default sends a breaking change
+        # in a pre-1.0 package straight to 1.0.0 — which it did: the first
+        # Release PR proposed 1.0.0 off the `fix!` that changed the device-id
+        # namespace. Staying pre-1.0 is deliberate while the wire contract is
+        # still settling, so a breaking change bumps the minor instead.
+        assert config()["packages"]["."]["bump-minor-pre-major"] is True
+
     def test_the_manifest_covers_exactly_the_configured_packages(self) -> None:
         # release-please refuses to run when the two disagree.
         assert set(manifest()) == set(config()["packages"])
