@@ -6,10 +6,11 @@ Conventional Commit messages when a Release PR merges — it inserts each new
 section directly above the most recent version heading, so don't hand-edit
 this file or add headings of your own.
 
-The `0.1.0` entry was written by hand before release-please took over. It is
-the baseline recorded in `.release-please-manifest.json`; nothing has been
-published to PyPI yet, so the first release-please release will also be this
-package's first upload.
+The `0.1.0` entry was written by hand before release-please took over, and
+**`0.1.0` was never published to PyPI** — it is only the pre-release baseline
+recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
+`0.1.0` distribution; `0.2.0` is this package's first published version, and it
+contains everything described under both headings.
 
 ## 0.1.0
 
