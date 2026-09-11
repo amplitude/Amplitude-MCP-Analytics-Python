@@ -12,6 +12,23 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.2.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.1.0...v0.2.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* anchor-derived device_id values change for every anchor type, and user_id changes for the process anchor. Identities supplied explicitly via set_identity, resolve_identity, or instrument_server(user_id=...) are unaffected. Nothing has been published to PyPI yet, so no released version of this package emitted the old values; the matching Node SDK change is the one with existing data behind it.
+
+### Features
+
+* add Amplitude MCP Analytics SDK for Python ([#1](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/1)) ([978f34e](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/978f34e10ba6acd8136728b9b3f8a9b66cf32e0a))
+
+
+### Bug Fixes
+
+* derive device ids under a private namespace, not NameSpace_OID ([#2](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/2)) ([809c300](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/809c300d27d66a2551b423008d0804020d46f773))
+* keep breaking changes below 1.0.0 until the wire contract settles ([#5](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/5)) ([76432b5](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/76432b532607c7564ce0ff5fa67745766a535942))
+
 ## 0.1.0
 
 Initial port of [`@amplitude/mcp-analytics`](https://github.com/amplitude/Amplitude-MCP-Analytics-Node)
