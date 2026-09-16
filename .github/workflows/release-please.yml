@@ -90,7 +90,7 @@ jobs:
 
       - name: Install uv
         if: steps.release.outputs.prs_created == 'true'
-        run: python3 -m pip install --quiet "uv==0.11.31"
+        run: python3 -m pip install --quiet uv
 
       - name: Update the Release PR lockfile
         if: steps.release.outputs.prs_created == 'true'
@@ -127,7 +127,7 @@ jobs:
       # uv is installed from PyPI via the runner's Python (no third-party setup
       # action), the same way test.yml does it.
       - name: Install uv
-        run: python3 -m pip install --quiet "uv==0.11.31"
+        run: python3 -m pip install --quiet uv
 
       - name: Install dependencies
         run: uv sync --locked
