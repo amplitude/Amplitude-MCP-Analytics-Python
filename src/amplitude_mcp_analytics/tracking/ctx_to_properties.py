@@ -36,6 +36,8 @@ def ctx_to_amplitude_fields(ctx: McpServerContext) -> AmplitudeFields:
 
     if ctx.client is not None and ctx.client.version is not None:
         event_fields["client_version"] = ctx.client.version
+    if ctx.client is not None and ctx.client.oauth_client_id is not None:
+        event_fields["oauth_client_id"] = ctx.client.oauth_client_id
     if ctx.server.version is not None:
         event_fields["server_version"] = ctx.server.version
     if ctx.server.type is not None:

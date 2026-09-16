@@ -16,10 +16,12 @@ import os
 import re
 import threading
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from ..context.factory import create_server_context, create_tool_context
 from ..context.types import (
+    ClientInfoResolver,
     IdentityResolver,
     McpAnchor,
     McpClientInfo,
@@ -27,12 +29,14 @@ from ..context.types import (
     McpServerContext,
     McpToolContext,
     McpToolMeta,
+    ResolveClientInfoInput,
 )
 from .identity import ServerIdentity, resolve_identity_from_chain
 from .mcp import (
     current_request_context,
     read_request_header,
     request_auth_info,
+    request_headers,
     request_meta_value,
 )
 
@@ -55,6 +59,9 @@ _TRACEPARENT_RE = re.compile(
 
 _process_anchor_lock = threading.Lock()
 _process_anchor: tuple[int, str] | None = None
+
+_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
 
 
 def _process_anchor_value() -> str:
@@ -230,12 +237,42 @@ def _resolve_anchor(
 
 
 def _resolve_client_info(
-    request_context: Any | None, server_ctx: McpServerContext
+    request_context: Any | None,
+    server_ctx: McpServerContext,
+    *,
+    auth_info: dict[str, Any] | None = None,
+    resolve_client_info: ClientInfoResolver | None = None,
+    logger: logging.Logger | None = None,
 ) -> McpClientInfo:
-    """Per-request client info. ``_meta.clientInfo`` wins (stateless clients
-    carry it per request); the handshake value cached on the server scope (or
-    readable off ``session.client_params``) is the fallback."""
-    meta_info = request_meta_value(request_context, "clientInfo")
+    """Resolve per-request client info using the shared cross-SDK precedence."""
+    from_host: McpClientInfo | Mapping[str, str | None] | None = None
+    if resolve_client_info is not None:
+        try:
+            from_host = resolve_client_info(
+                ResolveClientInfoInput(
+                    auth_info=auth_info,
+                    headers=request_headers(request_context),
+                )
+            )
+        except Exception as error:
+            if logger is not None:
+                logger.warning(
+                    "resolve_client_info callback threw: %s — falling back to "
+                    "the SDK's own client resolution.",
+                    error,
+                )
+
+    def host_value(name: str) -> str | None:
+        value = (
+            from_host.get(name)
+            if isinstance(from_host, Mapping)
+            else getattr(from_host, name, None)
+        )
+        return value if isinstance(value, str) and value != "" else None
+
+    meta_info = request_meta_value(request_context, _META_CLIENT_INFO)
+    if meta_info is None:
+        meta_info = request_meta_value(request_context, "clientInfo")
     meta_name = meta_version = None
     if isinstance(meta_info, dict):
         meta_name = meta_info.get("name")
@@ -249,16 +286,33 @@ def _resolve_client_info(
     handshake_info = getattr(client_params, "clientInfo", None)
 
     cached = server_ctx.client
-    name = meta_name or getattr(handshake_info, "name", None) or (cached.name if cached else None)
+    name = (
+        host_value("name")
+        or meta_name
+        or getattr(handshake_info, "name", None)
+        or (cached.name if cached else None)
+    )
     version = (
-        meta_version
+        host_value("version")
+        or meta_version
         or getattr(handshake_info, "version", None)
         or (cached.version if cached else None)
     )
-    user_agent = read_request_header(request_context, "user-agent") or (
-        cached.user_agent if cached else None
+    user_agent = (
+        host_value("user_agent")
+        or read_request_header(request_context, "user-agent")
+        or (cached.user_agent if cached else None)
     )
-    return McpClientInfo(name=name, version=version, user_agent=user_agent)
+    client_id = auth_info.get("client_id") if auth_info is not None else None
+    oauth_client_id = host_value("oauth_client_id") or (
+        client_id if isinstance(client_id, str) and client_id != "" else None
+    )
+    return McpClientInfo(
+        name=name,
+        version=version,
+        user_agent=user_agent,
+        oauth_client_id=oauth_client_id,
+    )
 
 
 def _resolve_protocol_version(request_context: Any | None) -> str | None:
@@ -269,7 +323,9 @@ def _resolve_protocol_version(request_context: Any | None) -> str | None:
     from_header = read_request_header(request_context, "mcp-protocol-version")
     if from_header is not None:
         return from_header
-    from_meta = request_meta_value(request_context, "protocolVersion")
+    from_meta = request_meta_value(request_context, _META_PROTOCOL_VERSION)
+    if from_meta is None:
+        from_meta = request_meta_value(request_context, "protocolVersion")
     if isinstance(from_meta, str):
         return from_meta
     session = getattr(request_context, "session", None) if request_context is not None else None
@@ -283,6 +339,7 @@ def build_server_context(
     *,
     scope_session_id: str | None = None,
     resolve_identity: IdentityResolver | None = None,
+    resolve_client_info: ClientInfoResolver | None = None,
     server_identity: ServerIdentity | None = None,
     logger: logging.Logger | None = None,
 ) -> McpServerContext:
@@ -300,10 +357,11 @@ def build_server_context(
         _request_traceparent(request_context),
     )
 
+    auth_info = request_auth_info(request_context)
     resolved = resolve_identity_from_chain(
         anchor=resolved_anchor,
         resolve_identity=resolve_identity,
-        auth_info=request_auth_info(request_context),
+        auth_info=auth_info,
         server_identity=server_identity,
         logger=logger,
     )
@@ -315,7 +373,13 @@ def build_server_context(
         protocol_version=_resolve_protocol_version(request_context) or server_ctx.protocol_version,
         identity=resolved.identity,
         tenant=resolved.tenant if resolved.tenant is not None else server_ctx.tenant,
-        client=_resolve_client_info(request_context, server_ctx),
+        client=_resolve_client_info(
+            request_context,
+            server_ctx,
+            auth_info=auth_info,
+            resolve_client_info=resolve_client_info,
+            logger=logger,
+        ),
         auth_type=server_ctx.auth_type,
         extra=server_ctx.extra,
         emit_anonymous_event=server_ctx.emit_anonymous_event,
@@ -329,6 +393,7 @@ def build_tool_context(
     *,
     scope_session_id: str | None = None,
     resolve_identity: IdentityResolver | None = None,
+    resolve_client_info: ClientInfoResolver | None = None,
     server_identity: ServerIdentity | None = None,
     logger: logging.Logger | None = None,
 ) -> McpToolContext:
@@ -339,6 +404,7 @@ def build_tool_context(
             server_ctx,
             scope_session_id=scope_session_id,
             resolve_identity=resolve_identity,
+            resolve_client_info=resolve_client_info,
             server_identity=server_identity,
             logger=logger,
         ),

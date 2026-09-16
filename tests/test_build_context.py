@@ -417,3 +417,74 @@ def test_a_malformed_traceparent_header_falls_to_the_anonymous_floor() -> None:
 
     assert resolved.anchor.type == "anonymous"
     assert resolved.identity.resolved_from == "anonymous"
+
+
+def test_namespaced_meta_client_info_and_protocol_version_are_preferred() -> None:
+    base = server_ctx(
+        transport="streamable-http",
+        client=McpClientInfo(name="handshake", version="1"),
+    )
+    meta = SimpleNamespace(
+        model_extra={
+            "io.modelcontextprotocol/clientInfo": {"name": "namespaced", "version": "2"},
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "clientInfo": {"name": "legacy", "version": "0"},
+            "protocolVersion": "2025-11-25",
+        }
+    )
+
+    with request_frame(request_context(http_request(headers={}), meta=meta)):
+        resolved = build_server_context(base)
+
+    assert resolved.client == McpClientInfo(name="namespaced", version="2")
+    assert resolved.protocol_version == "2026-07-28"
+
+
+def test_client_info_resolver_wins_by_field_and_oauth_id_is_separate() -> None:
+    base = server_ctx(
+        transport="streamable-http",
+        client=McpClientInfo(name="handshake", version="1"),
+    )
+    access_token = SimpleNamespace(
+        model_dump=lambda: {"client_id": "registration-123", "client_name": "claim-name"}
+    )
+    request = SimpleNamespace(
+        headers={"x-client-name": "header-name", "user-agent": "ua"},
+        query_params={},
+        scope={"user": SimpleNamespace(access_token=access_token)},
+    )
+
+    def resolver(value: Any) -> McpClientInfo:
+        assert value.auth_info == {
+            "client_id": "registration-123",
+            "client_name": "claim-name",
+        }
+        assert value.headers["x-client-name"] == "header-name"
+        return McpClientInfo(name="resolved")
+
+    with request_frame(request_context(request)):
+        resolved = build_server_context(base, resolve_client_info=resolver)
+
+    assert resolved.client == McpClientInfo(
+        name="resolved",
+        version="1",
+        user_agent="ua",
+        oauth_client_id="registration-123",
+    )
+
+
+def test_client_info_resolver_raise_warns_and_falls_through(list_logger: Any) -> None:
+    base = server_ctx(client=McpClientInfo(name="handshake"))
+
+    def resolver(_value: Any) -> None:
+        raise RuntimeError("boom")
+
+    resolved = build_server_context(
+        base,
+        resolve_client_info=resolver,
+        logger=list_logger,
+    )
+
+    assert resolved.client is not None
+    assert resolved.client.name == "handshake"
+    assert "resolve_client_info callback threw: boom" in list_logger.warnings[0]

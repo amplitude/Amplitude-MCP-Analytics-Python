@@ -17,6 +17,7 @@ from .config import (
 )
 from .context import (
     AnchorType,
+    ClientInfoResolver,
     IdentityResolvedFrom,
     IdentityResolver,
     McpAnchor,
@@ -30,6 +31,7 @@ from .context import (
     McpToolContext,
     McpToolMeta,
     McpTransport,
+    ResolveClientInfoInput,
     SetIdentityInput,
     create_server_context,
     create_tool_context,
@@ -76,6 +78,7 @@ __all__ = [
     "AmplitudeFields",
     "AmplitudeMCPAnalytics",
     "AnchorType",
+    "ClientInfoResolver",
     "AutocaptureConfig",
     "DefaultServerFields",
     "DefaultToolFields",
@@ -99,6 +102,7 @@ __all__ = [
     "MockAmplitudeMCPAnalytics",
     "RationaleSanitizer",
     "ResolvedAutocapture",
+    "ResolveClientInfoInput",
     "SetIdentityInput",
     "TrackEventOptions",
     "__version__",

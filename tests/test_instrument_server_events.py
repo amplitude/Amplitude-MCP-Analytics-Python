@@ -68,6 +68,28 @@ async def test_emits_session_initialized_at_the_handshake() -> None:
         assert props["[MCP] Auth Type"] == "oauth"
 
 
+async def test_resolve_client_info_overrides_handshake_for_all_events() -> None:
+    analytics = make_analytics()
+    mcp = make_fastmcp()
+    analytics.instrument_server(
+        mcp,
+        user_id="user-1",
+        resolve_client_info=lambda _request: {"name": "resolved-client"},
+    )
+
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=CLIENT
+    ) as client:
+        await client.list_tools()
+
+    assert analytics.get_events("[MCP] Session Initialized")[0]["event_properties"][
+        "[MCP] Client Name"
+    ] == "resolved-client"
+    assert analytics.get_events("[MCP] Tools Listed")[0]["event_properties"][
+        "[MCP] Client Name"
+    ] == "resolved-client"
+
+
 async def test_emits_session_ended_once_with_a_duration_on_close() -> None:
     analytics = make_analytics()
     mcp = make_fastmcp()

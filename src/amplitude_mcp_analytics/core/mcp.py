@@ -20,6 +20,7 @@ __all__ = [
     "lookup_registered_tool",
     "mcp_types",
     "read_request_header",
+    "request_headers",
     "request_auth_info",
     "request_meta_value",
     "unwrap_server",
@@ -129,6 +130,20 @@ def read_request_header(request_context: Any | None, name: str) -> str | None:
     except Exception:
         return None
     return value if isinstance(value, str) and value != "" else None
+
+
+def request_headers(request_context: Any | None) -> dict[str, str] | None:
+    """HTTP request headers as a plain, SDK-free mapping. @internal"""
+    if request_context is None:
+        return None
+    request = getattr(request_context, "request", None)
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+    try:
+        return {str(key): str(value) for key, value in headers.items()}
+    except Exception:
+        return None
 
 
 def request_meta_value(request_context: Any | None, key: str) -> Any | None:
