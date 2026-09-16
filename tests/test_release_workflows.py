@@ -37,6 +37,7 @@ WORKFLOW_PATH = WORKFLOWS / WORKFLOW_FILENAME
 CONFIG_PATH = REPO / "release-please-config.json"
 MANIFEST_PATH = REPO / ".release-please-manifest.json"
 PYPROJECT_PATH = REPO / "pyproject.toml"
+UV_LOCK_PATH = REPO / "uv.lock"
 PACKAGE_INIT = REPO / "src" / "amplitude_mcp_analytics" / "__init__.py"
 
 ENVIRONMENT = "pypi-release"
@@ -107,6 +108,15 @@ def pyproject_version() -> str:
     return match.group(1)
 
 
+def root_lock_version() -> str:
+    package_block = UV_LOCK_PATH.read_text().split(
+        'name = "amplitude-mcp-analytics"', 1
+    )[1]
+    match = re.search(r'^version = "([^"]+)"', package_block, re.MULTILINE)
+    assert match is not None, "uv.lock has no root project version"
+    return match.group(1)
+
+
 class TestTheOldFlowIsGone:
     def test_the_hand_rolled_release_workflows_are_deleted(self) -> None:
         # Both are superseded by release-please.yml; leaving either behind
@@ -131,6 +141,12 @@ class TestWorkflowShape:
     def test_both_jobs_run_in_the_release_environment(self) -> None:
         # The App secrets and the PyPI Trusted Publisher are both scoped to it.
         assert [job.get("environment") for job in jobs().values()] == [ENVIRONMENT] * 2
+
+    def test_release_pr_updates_are_serialized(self) -> None:
+        assert workflow()["concurrency"] == {
+            "group": "release-please-main",
+            "cancel-in-progress": False,
+        }
 
 
 class TestActionsArePinned:
@@ -181,8 +197,35 @@ class TestPublishGatesAndTooling:
         assert index["pytest"] < index["uv publish"]
         assert index["uv build"] < index["uv publish"]
 
-    def test_dependencies_come_from_the_lockfile(self) -> None:
-        assert any("uv sync --frozen" in script for script in run_scripts("publish"))
+    def test_dependencies_come_from_a_current_lockfile(self) -> None:
+        scripts = run_scripts("publish")
+        assert any("uv sync --locked" in script for script in scripts)
+        assert all("--frozen" not in script for script in scripts)
+
+
+class TestReleasePRLockfile:
+    def test_release_pr_is_checked_out_with_the_app_token(self) -> None:
+        checkout = next(
+            step for step in steps("release-please") if step.get("name") == "Checkout the Release PR"
+        )
+        assert checkout["if"] == "steps.release.outputs.prs_created == 'true'"
+        assert checkout["with"]["ref"] == (
+            "${{ fromJSON(steps.release.outputs.pr).headBranchName }}"
+        )
+        assert checkout["with"]["token"] == "${{ steps.app-token.outputs.token }}"
+
+    def test_uv_regenerates_and_commits_the_lockfile(self) -> None:
+        update = next(
+            step
+            for step in steps("release-please")
+            if step.get("name") == "Update the Release PR lockfile"
+        )
+        script = update["run"]
+        for command in ("uv lock", "git add uv.lock", "git commit", "git push"):
+            assert command in script
+
+    def test_the_committed_lockfile_matches_the_project(self) -> None:
+        assert root_lock_version() == pyproject_version()
 
 
 class TestTrustedPublishing:
