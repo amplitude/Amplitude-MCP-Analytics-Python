@@ -46,6 +46,12 @@ permissions:
   # workflow level because that is the scope uv's token exchange reads.
   id-token: write
 
+# The job updates release-please's shared PR branch after creating it. Serialize
+# pushes to main so two runs cannot race while regenerating and pushing uv.lock.
+concurrency:
+  group: release-please-main
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-24.04
@@ -72,6 +78,38 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # release-please updates pyproject.toml, but uv owns uv.lock. Refresh the
+      # lockfile on the generated Release PR instead of teaching release-please
+      # to edit uv's internal lockfile format directly.
+      - name: Checkout the Release PR
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install uv
+        if: steps.release.outputs.prs_created == 'true'
+        run: python3 -m pip install --quiet "uv==0.11.31"
+
+      - name: Update the Release PR lockfile
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        run: |
+          uv lock
+
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock is already current"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: update uv lockfile"
+          git push origin "HEAD:${RELEASE_BRANCH}"
+
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-24.04
@@ -89,10 +127,10 @@ jobs:
       # uv is installed from PyPI via the runner's Python (no third-party setup
       # action), the same way test.yml does it.
       - name: Install uv
-        run: python3 -m pip install --quiet uv
+        run: python3 -m pip install --quiet "uv==0.11.31"
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       # The same gates test.yml enforces on every PR, re-run against the merged
       # release commit: a red main must not reach PyPI, and unlike a tag push
