@@ -13,8 +13,6 @@ from __future__ import annotations
 import anyio
 import httpx
 import pytest
-from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamable_http_client
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
@@ -141,15 +139,19 @@ async def test_emits_tools_listed_with_live_count_and_names() -> None:
     assert props["[MCP] Response Size"] > 0
 
 
+class _TestAccessToken(AccessToken):
+    email: str | None = None
+
+
 class _TokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         if token != "test-token":
             return None
-        return AccessToken(
+        return _TestAccessToken(
             token=token,
             client_id="test-client",
             scopes=["mcp:read"],
-            subject="alice@example.com",
+            email="alice@example.com",
         )
 
 
@@ -172,8 +174,8 @@ async def test_stateless_tools_list_resolves_identity_from_auth_info() -> None:
 
     def resolve_identity(auth_info: dict[str, object] | None) -> SetIdentityInput:
         received.append(auth_info)
-        subject = (auth_info or {}).get("subject")
-        return SetIdentityInput(user_id=subject if isinstance(subject, str) else None)
+        email = (auth_info or {}).get("email")
+        return SetIdentityInput(user_id=email if isinstance(email, str) else None)
 
     analytics.instrument_server(mcp, resolve_identity=resolve_identity)
 
@@ -184,22 +186,18 @@ async def test_stateless_tools_list_resolves_identity_from_auth_info() -> None:
         headers={"authorization": "Bearer test-token"},
     )
     async with mcp.session_manager.run(), http_client:
-        async with streamable_http_client(
-            "http://localhost:8000/mcp",
-            http_client=http_client,
-            terminate_on_close=False,
-        ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(
-                read_stream, write_stream, client_info=CLIENT
-            ) as client:
-                await client.initialize()
-                await client.list_tools()
+        response = await http_client.post(
+            "/mcp",
+            headers={"accept": "application/json, text/event-stream"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+        assert response.status_code == 200
 
     events = analytics.get_events("[MCP] Tools Listed")
     assert len(events) == 1
     assert events[0]["user_id"] == "alice@example.com"
     assert received
-    assert all((auth_info or {}).get("subject") == "alice@example.com" for auth_info in received)
+    assert all((auth_info or {}).get("email") == "alice@example.com" for auth_info in received)
 
 
 async def test_tools_listed_reflects_tools_added_after_connect() -> None:
