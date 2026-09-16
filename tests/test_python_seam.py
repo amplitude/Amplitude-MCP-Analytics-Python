@@ -3,7 +3,7 @@ wrapping ``Server.run`` and the public ``request_handlers`` dict instead of
 ``connect``/``_requestHandlers``:
 
 (a) the SDK's internal tools/list cache refresh must not emit phantom events;
-(b) stateless runs are excluded from the session lifecycle entirely;
+(b) sessionless runs emit initialization but no meaningless end duration;
 (c) the tools/call dispatch marker survives ``anyio.to_thread`` context copies;
 (d) ``functools.wraps`` keeps the original signature so FastMCP still builds
     the real input schema through the wrapper;
@@ -93,11 +93,11 @@ async def test_internal_tools_list_cache_refresh_emits_no_phantom_event() -> Non
         assert len(analytics.get_events("[MCP] Tools Listed")) == 2
 
 
-async def test_stateless_run_emits_no_session_lifecycle() -> None:
+async def test_stateless_run_emits_initialized_but_not_ended() -> None:
     # stateless=True means the manager spins one run per HTTP request: there is
-    # no protocol session, so the lifecycle events would be fabrications. The
-    # run wrapper swaps in a no-op initialized observer and the ended hook is
-    # gated on a session having started.
+    # no persistent protocol session. The initialize handshake is still real
+    # and useful (it carries clientInfo), but an end duration for one HTTP
+    # request would be meaningless.
     analytics = make_analytics()
     server = Server("seam-server")
 
@@ -123,15 +123,16 @@ async def test_stateless_run_emits_no_session_lifecycle() -> None:
             async with ClientSession(
                 read_stream=client_read, write_stream=client_write
             ) as session:
-                # Even a full handshake on a stateless run must not start a
-                # session — the observer is disarmed, not merely unlucky.
                 await session.initialize()
                 await session.list_tools()
             tg.cancel_scope.cancel()
 
     types_seen = [e["event_type"] for e in analytics.events]
-    assert "[MCP] Session Initialized" not in types_seen
+    assert "[MCP] Session Initialized" in types_seen
     assert "[MCP] Session Ended" not in types_seen
+    init = analytics.get_events("[MCP] Session Initialized")[0]
+    assert init["event_properties"]["[MCP] Client Name"] == "mcp"
+    assert init["event_properties"]["[MCP] Session ID"] == "no-session"
     # The run still carried a scope: capability events keep working.
     assert "[MCP] Tools Listed" in types_seen
 

@@ -7,20 +7,15 @@ This wrapper does three jobs:
 1. **Scope**: create a fresh :class:`ServerScope` per run and set it into the
    scope ContextVar around the delegated ``run`` — anyio task groups copy the
    caller's context at ``start_soon``, so every handler task inherits it.
-2. **Handshake capture** via a read-stream proxy: the session consumes the raw
-   ``read_stream`` (``async with`` + ``async for``), so a delegating wrapper
-   observes each ``SessionMessage`` before the server handles it — the
-   ``initialize`` request (clientInfo / protocolVersion / transport evidence)
-   and the ``notifications/initialized`` notification (session id from the
-   ``mcp-session-id`` header — the initialize POST carries none, the server
-   mints the id in its response). Fallback if this proxy ever bites:
-   chain ``notification_handlers[types.InitializedNotification]`` instead.
+2. **Handshake capture** via stream proxies: the read side captures the
+   ``initialize`` request and the write side reports it only after the matching
+   successful response is sent. Python's ``ServerSession`` consumes initialize
+   internally, before the public server request-handler registry.
 3. **Session end**: ``run()`` returning or raising is the transport closing —
    emit ``[MCP] Session Ended`` from the ``finally`` when a session was
-   initialized. Stateless runs (``stateless=True``) never handshake and are
-   excluded from session lifecycle entirely — the manager spins one run per
-   HTTP request, so there is no persistent session for
-   ``[MCP] Session Initialized`` / ``[MCP] Session Ended`` to bracket.
+   initialized and the transport outlives one request. Sessionless runs still
+   report their real initialize handshake, but never fabricate an end duration
+   for a one-request transport.
 """
 
 from __future__ import annotations
@@ -82,6 +77,41 @@ class _ReadStreamProxy:
         return getattr(self._inner, name)
 
 
+class _WriteStreamProxy:
+    """Delegating send stream that observes messages after a successful send."""
+
+    def __init__(self, inner: Any, observer: Callable[[Any], None]) -> None:
+        self._inner = inner
+        self._observer = observer
+
+    async def __aenter__(self) -> _WriteStreamProxy:
+        await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        return await self._inner.__aexit__(*exc_info)
+
+    async def send(self, item: Any) -> None:
+        await self._inner.send(item)
+        try:
+            self._observer(item)
+        except Exception:
+            pass
+
+    def send_nowait(self, item: Any) -> None:
+        self._inner.send_nowait(item)
+        try:
+            self._observer(item)
+        except Exception:
+            pass
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class _HandshakeObserver:
     """Inspects each inbound ``SessionMessage`` for the scope's handshake and
     transport facts. All reads are hasattr-guarded — message shapes are the
@@ -95,6 +125,7 @@ class _HandshakeObserver:
     ) -> None:
         self._scope = scope
         self._on_initialized = on_initialized
+        self._initialize_request_ids: set[Any] = set()
 
     def observe(self, item: Any) -> None:
         message = getattr(item, "message", None)
@@ -129,8 +160,17 @@ class _HandshakeObserver:
         method = getattr(root, "method", None)
         if method == "initialize":
             self._capture_initialize(root, request)
-        elif method == "notifications/initialized":
-            self._on_initialized(scope)
+
+    def observe_outbound(self, item: Any) -> None:
+        """Emit after the matching initialize response was sent successfully."""
+        message = getattr(item, "message", None)
+        root = getattr(message, "root", None)
+        response_id = getattr(root, "id", None)
+        if response_id not in self._initialize_request_ids:
+            return
+        self._initialize_request_ids.discard(response_id)
+        if getattr(root, "error", None) is None:
+            self._on_initialized(self._scope)
 
     def _capture_initialize(self, root: Any, request: Any) -> None:
         """Capture the handshake ``clientInfo`` / ``protocolVersion`` onto the
@@ -141,6 +181,9 @@ class _HandshakeObserver:
         params = getattr(root, "params", None)
         if not isinstance(params, dict):
             return
+        request_id = getattr(root, "id", None)
+        if request_id is not None:
+            self._initialize_request_ids.add(request_id)
         client_info = params.get("clientInfo")
         existing = scope.ctx.client
         if isinstance(client_info, dict):
@@ -202,18 +245,23 @@ def install_run_wrapper(
         # request, so session lifecycle is meaningless there — no session
         # events are emitted for this run.
         stateless = bool(kwargs.get("stateless", args[1] if len(args) >= 2 else False))
-        observer_cb: Callable[[ServerScope], None] = (
-            (lambda s: None) if stateless else on_initialized
-        )
-        observer = _HandshakeObserver(scope, observer_cb)
-        proxied = _ReadStreamProxy(read_stream, observer.observe)
+        scope.transport_persists = not stateless
+        observer = _HandshakeObserver(scope, on_initialized)
+        proxied_read = _ReadStreamProxy(read_stream, observer.observe)
+        proxied_write = _WriteStreamProxy(write_stream, observer.observe_outbound)
 
         token = scope_var().set(scope)
         try:
-            return await original_run(proxied, write_stream, initialization_options, *args, **kwargs)
+            return await original_run(
+                proxied_read, proxied_write, initialization_options, *args, **kwargs
+            )
         finally:
             scope_var().reset(token)
-            if scope.session_start is not None and scope.ctx is not None:
+            if (
+                scope.transport_persists
+                and scope.session_start is not None
+                and scope.ctx is not None
+            ):
                 duration_ms = (time.perf_counter() - scope.session_start) * 1000
                 scope.session_start = None
                 try:

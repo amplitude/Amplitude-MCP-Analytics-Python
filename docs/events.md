@@ -14,7 +14,7 @@ Amplitude SDKs on the same project.
 
 | Event | Fires when | Transports | Toggle |
 | -- | -- | -- | -- |
-| [`[MCP] Session Initialized`](#mcp-session-initialized) | The `initialize` handshake completes | stdio, stateful Streamable HTTP, SSE | `autocapture.session_lifecycle` |
+| [`[MCP] Session Initialized`](#mcp-session-initialized) | The `initialize` handshake completes | every transport that handshakes | `autocapture.session_lifecycle` |
 | [`[MCP] Session Ended`](#mcp-session-ended) | The run settles (transport close), after an initialized session | stdio, stateful Streamable HTTP, SSE | `autocapture.session_lifecycle` |
 | [`[MCP] Tools Listed`](#mcp-tools-listed) | A `tools/list` request is served | all | `autocapture.tools_listed` |
 | [`[MCP] Tool Call Response`](#mcp-tool-call-response) | An instrumented tool call settles | all | `autocapture.tool_calls` |
@@ -24,11 +24,10 @@ Amplitude SDKs on the same project.
 `autocapture.server_events` value — see the README's
 [Choosing what's captured](../README.md#choosing-whats-captured).)
 
-A protocol session exists where the `initialize` handshake happens: stdio,
-**stateful** Streamable HTTP (the server mints a session id at the handshake),
-and SSE. On **stateless** Streamable HTTP the session manager spins up one
-stateless run per request — there is no handshake and no protocol session, so
-the session lifecycle events are **not emitted** rather than fabricated.
+A sessionless Streamable HTTP transport still performs the `initialize`
+handshake, so initialization is reported with no session id. It does not emit
+an end event because its run lives for only one request and has no meaningful
+session duration.
 `[MCP] Tools Listed`, `[MCP] Tool Call Response`, and
 `[MCP] Tool Call Rejected` fire on every transport.
 
@@ -121,6 +120,21 @@ stateless branch. One host escape hatch: a session id bound via
 transport itself carries none (for per-request servers whose session ids live
 in the host's own store rather than on the transport).
 
+### Client identity
+
+Client fields resolve, by field, from `instrument_server(resolve_client_info=)`
+first, then namespaced per-request `_meta`
+(`io.modelcontextprotocol/clientInfo`), the unnamespaced spelling, the
+`initialize` handshake, and finally the HTTP `User-Agent` for the user-agent
+field only. The resolver receives a `ResolveClientInfoInput` containing the
+request's verified `auth_info` and HTTP headers. Empty fields and exceptions
+fall through to the next source.
+
+`[MCP] OAuth Client ID` is separate. It comes from `auth_info["client_id"]` or
+the resolver and is never inherited from the connection, so it always
+describes the request carrying the event. It identifies a registration, not a
+product, and is deliberately not used as `[MCP] Client Name`.
+
 ## Shared properties
 
 Every event — the five default events *and* custom events emitted through
@@ -130,15 +144,16 @@ properties:
 | Property | Type | Present | Value |
 | -- | -- | -- | -- |
 | `[MCP] Session ID` | string | always | The protocol session id when the anchor is a session id; the literal `no-session` otherwise |
-| `[MCP] Client Name` | string | always | MCP client name from the handshake `clientInfo` (session transports) or per-request `_meta.clientInfo` (stateless, wins over the handshake); `unknown` when unavailable |
+| `[MCP] Client Name` | string | always | MCP client name from the per-request resolver, namespaced/legacy `_meta`, or handshake; `unknown` when unavailable |
 | `[MCP] Client Version` | string | when known | MCP client version, same sources as the name |
+| `[MCP] OAuth Client ID` | string | when authenticated or resolved | OAuth client registration id for this request; never folded into the client name |
 | `[MCP] User Agent` | string | always | Raw HTTP `User-Agent` header (Streamable HTTP / SSE); `unknown` otherwise (always `unknown` on stdio) |
 | `[MCP] Server Name` | string | always | `server_name` from the client options |
 | `[MCP] Server Version` | string | when set | `server_version` from the client options (always set when instrumented through `instrument_server`) |
 | `[MCP] Server Type` | string | when set | Server classification; only present when set on a manually built context |
 | `[MCP] Transport` | string | always | `stdio`, `streamable-http`, or `sse`, auto-detected from the message stream (or the `transport=` override on `instrument_server`). `sse` — the deprecated HTTP+SSE transport — is a **Python-SDK-only addition**; the Node SDK emits only `stdio`/`streamable-http` |
 | `[MCP] Anchor Type` | string | always | `session-id`, `trace`, `process`, or `anonymous` — see [Correlation anchor](#correlation-anchor) |
-| `[MCP] Protocol Version` | string | when known | Negotiated MCP protocol revision: the `MCP-Protocol-Version` HTTP header or `_meta.protocolVersion` per request, else the value negotiated at the `initialize` handshake |
+| `[MCP] Protocol Version` | string | when known | Negotiated MCP protocol revision: the `MCP-Protocol-Version` HTTP header, namespaced/legacy `_meta` per request, or the value negotiated at the `initialize` handshake |
 | `[MCP] Auth Type` | string | when configured | The `auth_type` passed to `instrument_server` (e.g. `oauth`); values are server-specific |
 
 On top of these, any **`extra`** enrichment bags in scope ride along as
@@ -150,13 +165,10 @@ tool-scope events. See [Property precedence](#property-precedence).
 
 Marks the start of a protocol session.
 
-- **Fires when:** the MCP `initialize` handshake completes. The SDK observes
-  the server's inbound message stream: the `initialize` request is where it
-  captures the client's `clientInfo` and negotiated protocol version for the
-  session, and the client's `notifications/initialized` notification is the
-  moment the event is emitted.
-- **Transports:** stdio, stateful Streamable HTTP, and SSE — stateless runs
-  never handshake, so the event is never fabricated there.
+- **Fires when:** the MCP `initialize` request succeeds. The SDK wraps that
+  request handler, where it captures `clientInfo` and protocol version.
+- **Transports:** every transport that performs the handshake, including
+  sessionless Streamable HTTP.
 - **Toggle:** `autocapture.session_lifecycle` (defaults to
   `autocapture.server_events`).
 - **Identity:** resolved at the handshake from the static `instrument_server`
@@ -173,9 +185,9 @@ Marks the end of a protocol session.
 
 - **Fires when:** the run settles — `run()` returning or raising is the
   transport closing — but only when `[MCP] Session Initialized` was emitted for
-  that connection first. Stateless runs and never-initialized connections never
-  emit it.
-- **Transports / toggle / identity:** as `[MCP] Session Initialized`; the
+  that connection first and the transport outlives one request. Sessionless
+  runs and never-initialized connections never emit it.
+- **Transports / toggle / identity:** persistent transports only; the
   event reuses the session context resolved at the handshake.
 
 **Event-specific properties:**

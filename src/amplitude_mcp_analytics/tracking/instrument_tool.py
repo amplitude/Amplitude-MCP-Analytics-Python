@@ -40,7 +40,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import ErrorMessageSanitizer
-from ..context.types import IdentityResolver, McpServerContext, McpToolContext, McpToolMeta
+from ..context.types import (
+    ClientInfoResolver,
+    IdentityResolver,
+    McpServerContext,
+    McpToolContext,
+    McpToolMeta,
+)
 from ..context.vars import _context_var
 from ..core.build_context import build_tool_context
 from ..core.identity import ServerIdentity
@@ -86,6 +92,9 @@ class InstrumentToolDependencies:
 
     get_scope_session_id: Callable[[], str | None] | None = None
     """The dispatching run's captured session id (streamable HTTP), when any."""
+
+    get_client_info_resolver: Callable[[], ClientInfoResolver | None] | None = None
+    """The resolver owned by the dispatching server binding."""
 
     resolve_identity: IdentityResolver | None = None
 
@@ -158,6 +167,11 @@ def instrument_tool(
                 deps.get_scope_session_id() if deps.get_scope_session_id is not None else None
             ),
             resolve_identity=deps.resolve_identity,
+            resolve_client_info=(
+                deps.get_client_info_resolver()
+                if deps.get_client_info_resolver is not None
+                else None
+            ),
             server_identity=(
                 deps.get_server_identity() if deps.get_server_identity is not None else None
             ),

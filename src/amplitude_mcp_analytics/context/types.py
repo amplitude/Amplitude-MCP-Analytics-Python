@@ -10,7 +10,7 @@ breaking change; other fields may still evolve before they are promoted.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -18,6 +18,7 @@ from ..errors import McpToolError
 
 __all__ = [
     "AnchorType",
+    "ClientInfoResolver",
     "IdentityResolvedFrom",
     "IdentityResolver",
     "McpAnchor",
@@ -31,6 +32,7 @@ __all__ = [
     "McpToolContext",
     "McpToolMeta",
     "McpTransport",
+    "ResolveClientInfoInput",
     "SetIdentityInput",
 ]
 
@@ -112,6 +114,26 @@ class McpClientInfo:
     version: str | None = None
     user_agent: str | None = None
     """Raw HTTP ``User-Agent`` (HTTP transports only)."""
+    oauth_client_id: str | None = None
+    """OAuth ``client_id`` for this request. Kept separate from ``name``
+    because it identifies a client registration, not a product."""
+
+
+@dataclass(frozen=True)
+class ResolveClientInfoInput:
+    """Per-request inputs supplied to :data:`ClientInfoResolver`."""
+
+    auth_info: dict[str, Any] | None = None
+    """Verified OAuth claims for this request, when available."""
+    headers: Mapping[str, str] | None = None
+    """Request headers for HTTP transports; absent over stdio."""
+
+
+ClientInfoResolver = Callable[
+    [ResolveClientInfoInput], McpClientInfo | Mapping[str, str | None] | None
+]
+"""Resolve MCP client info per request. Return only the fields known; empty
+or missing fields fall through to the SDK's own sources."""
 
 
 @dataclass

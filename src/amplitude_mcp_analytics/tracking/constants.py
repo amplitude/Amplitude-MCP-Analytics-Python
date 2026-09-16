@@ -33,10 +33,9 @@ TOOL_CALL_REJECTED = "[MCP] Tool Call Rejected"
 #: capped to keep property payloads bounded.
 ATTEMPTED_TOOL_NAME_MAX = 200
 
-#: Default server connection / capability events. Session lifecycle events
-#: apply only where a protocol session exists — stdio and stateful Streamable
-#: HTTP; they are never fabricated on stateless HTTP (no ``initialize``
-#: handshake fires there).
+#: Default server connection / capability events. Sessionless Streamable HTTP
+#: still emits initialization when its real handshake succeeds, but no ended
+#: event or duration is fabricated for its one-request transport.
 SESSION_INITIALIZED = "[MCP] Session Initialized"
 SESSION_ENDED = "[MCP] Session Ended"
 TOOLS_LISTED = "[MCP] Tools Listed"
@@ -55,6 +54,7 @@ EVENT_PROPERTY_KEYS: dict[str, str] = {
     "session_id": "[MCP] Session ID",
     "client_name": "[MCP] Client Name",
     "client_version": "[MCP] Client Version",
+    "oauth_client_id": "[MCP] OAuth Client ID",
     "user_agent": "[MCP] User Agent",
     "server_name": "[MCP] Server Name",
     "server_version": "[MCP] Server Version",
