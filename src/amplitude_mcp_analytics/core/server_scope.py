@@ -13,7 +13,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from ..context.types import IdentityResolver, McpServerContext
+from ..context.types import ClientInfoResolver, IdentityResolver, McpServerContext
 from .identity import ServerIdentity
 
 __all__ = ["ServerScope", "current_server_scope", "scope_var"]
@@ -33,6 +33,9 @@ class ServerScope:
     identity_resolver: IdentityResolver | None = None
     """Per-request identity resolver from ``instrument_server``."""
 
+    resolve_client_info: ClientInfoResolver | None = None
+    """Per-request client resolver from this server binding."""
+
     session_start: float | None = None
     """Handshake timestamp (``time.perf_counter()`` seconds) — doubles as the
     "a session is active" flag for THIS run's transport."""
@@ -46,6 +49,10 @@ class ServerScope:
     transport_resolved: bool = False
     """True once transport evidence (or an explicit override) fixed
     ``ctx.transport`` — later messages no longer flip it."""
+
+    transport_persists: bool = True
+    """Whether this run's transport outlives one HTTP request. Session-ended
+    duration is meaningful only for persistent transports."""
 
     extra_state: dict[str, object] = field(default_factory=dict)
     """Free slot for adapter bookkeeping."""

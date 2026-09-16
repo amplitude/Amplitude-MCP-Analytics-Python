@@ -106,7 +106,12 @@ class TestCtxToAmplitudeFields:
             transport="streamable-http",
             protocol_version="2026-07-28",
             auth_type="OAuth",
-            client=McpClientInfo(name="cursor", version="0.42", user_agent="cursor/0.42 (mac)"),
+            client=McpClientInfo(
+                name="cursor",
+                version="0.42",
+                user_agent="cursor/0.42 (mac)",
+                oauth_client_id="registration-123",
+            ),
         )
         fields = ctx_to_amplitude_fields(ctx).event_properties
 
@@ -116,6 +121,7 @@ class TestCtxToAmplitudeFields:
                 "client_name": "cursor",
                 "client_version": "0.42",
                 "user_agent": "cursor/0.42 (mac)",
+                "oauth_client_id": "registration-123",
                 "server_name": "my-server",
                 "server_version": "1.2.3",
                 "server_type": "remote",

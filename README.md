@@ -115,8 +115,8 @@ Once a server is bound and its tools wrapped, the SDK emits these automatically:
 
 | Event | When | Notable properties |
 | -- | -- | -- |
-| `[MCP] Session Initialized` | Connection handshake (stdio, stateful Streamable HTTP, SSE) | client/server identity, `[MCP] Transport`, `[MCP] Auth Type` |
-| `[MCP] Session Ended` | Transport close (same transports) | `[MCP] Session Duration` |
+| `[MCP] Session Initialized` | Successful `initialize` handshake (every transport that handshakes) | client/server identity, `[MCP] Transport`, `[MCP] Auth Type` |
+| `[MCP] Session Ended` | Close of a connection that outlived one request | `[MCP] Session Duration` |
 | `[MCP] Tools Listed` | A `tools/list` request | `[MCP] Tool Count`, `[MCP] Tool Names` (capped), `[MCP] Response Duration`, `[MCP] Response Size` |
 | `[MCP] Tool Call Response` | Every instrumented tool call | `[MCP] Is Error`, `[MCP] Error Message`/`[MCP] Error Code`/`[MCP] Error Type`/`[MCP] Error HTTP Status`, `[MCP] Response Duration`, `[MCP] Request Size`, `[MCP] Response Size`, `[MCP] Rationale` (opt-in, see below) |
 | `[MCP] Tool Call Rejected` | A `tools/call` request that fails before any tool callback runs (unknown tool, input-schema validation) | `[MCP] Attempted Tool Name` (unvalidated input — kept off `[MCP] Tool Name`), `[MCP] Rejection Reason` (`unknown_tool`/`disabled_tool`/`schema_validation`/`unrecognized`), `[MCP] Error Message`, `[MCP] Response Duration`, `[MCP] Response Size`, `[MCP] Response HTTP Status` |
@@ -128,13 +128,35 @@ This table is a summary. The full reference — every property and when it's
 present, identity resolution, transport nuances, and the error taxonomy —
 lives in [`docs/events.md`](./docs/events.md).
 
-Session events model a real protocol session, which only exists where an
-`initialize` handshake happens: stdio, stateful Streamable HTTP, and SSE. On
-stateless Streamable HTTP the session manager spins up one stateless run per
-request — there is no handshake, so `[MCP] Session Initialized` /
-`[MCP] Session Ended` are **not** emitted rather than fabricated. Every event
-also carries the shared context properties (identity, client/server, transport,
-trace correlation).
+Sessionless Streamable HTTP still performs the `initialize` handshake, so it
+emits `[MCP] Session Initialized` with `[MCP] Session ID: no-session`. It does
+not emit `[MCP] Session Ended`: a duration for a transport that lives for one
+request is not meaningful. Every event also carries the shared context
+properties (identity, client/server, transport, trace correlation).
+
+### Client name on sessionless servers
+
+Through protocol `2025-11-25`, `clientInfo` appears only on `initialize`. A
+host that creates a fresh server for every HTTP request therefore cannot read
+that name on a later `tools/call`. Supply it from request-local OAuth claims or
+headers with `resolve_client_info`:
+
+```python
+from amplitude_mcp_analytics import McpClientInfo
+
+analytics.instrument_server(
+    mcp,
+    resolve_client_info=lambda request: McpClientInfo(
+        name=(request.auth_info or {}).get("client_name")
+    ),
+)
+```
+
+The callback wins over wire-derived sources and may return only the fields it
+knows; returning `None`, empty fields, or raising falls through safely. The SDK
+also emits `[MCP] OAuth Client ID` from the request's verified `client_id`.
+That value identifies a registration rather than a product, so it is never
+folded into `[MCP] Client Name`.
 
 ## Identity
 

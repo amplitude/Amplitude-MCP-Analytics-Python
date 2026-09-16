@@ -16,6 +16,7 @@ from typing import Any
 from .config import MCPAnalyticsConfig
 from .context.factory import create_server_context
 from .context.types import (
+    ClientInfoResolver,
     IdentityResolver,
     McpAnchor,
     McpClientInfo,
@@ -165,6 +166,7 @@ class AmplitudeMCPAnalytics:
         # Identity from the most recent instrument_server(server, ...) — same
         # fallback role as _server_ctx.
         self._server_identity: ServerIdentity | None = None
+        self._client_info_resolver: ClientInfoResolver | None = None
 
     def _on_tracked(self) -> None:
         self._track_count_since_flush += 1
@@ -357,6 +359,11 @@ class AmplitudeMCPAnalytics:
                     if (scope := current_server_scope()) is not None
                     else None
                 ),
+                get_client_info_resolver=lambda: (
+                    scope.resolve_client_info
+                    if (scope := current_server_scope()) is not None
+                    else self._client_info_resolver
+                ),
                 resolve_identity=resolve_identity,
                 track_tool_calls=self.config.autocapture.tool_calls,
                 sanitize_error_message=self.config.sanitize_error_message,
@@ -404,6 +411,7 @@ class AmplitudeMCPAnalytics:
         auth_type: str | None = None,
         resolve_identity: IdentityResolver | None = None,
         client: McpClientInfo | Mapping[str, str] | None = None,
+        resolve_client_info: ClientInfoResolver | None = None,
         session_id: str | None = None,
         protocol_version: str | None = None,
         extra: dict[str, Any] | None = None,
@@ -427,6 +435,8 @@ class AmplitudeMCPAnalytics:
         fields, which sit at the next step of the fallback chain and are scoped
         to THIS server binding. ``client`` supplies MCP client info resolved
         out-of-band (handshake / per-request values still win);
+        ``resolve_client_info`` supplies client fields per request from its
+        OAuth claims or HTTP headers and wins over SDK-derived sources.
         ``session_id`` binds a host-managed correlation session id (a transport
         session id still wins); ``protocol_version`` is the out-of-band
         fallback; ``extra`` is enrichment attached to every event from this
@@ -494,6 +504,7 @@ class AmplitudeMCPAnalytics:
                 name=client.get("name"),
                 version=client.get("version"),
                 user_agent=client.get("user_agent"),
+                oauth_client_id=client.get("oauth_client_id"),
             )
         else:
             bound_client = client
@@ -508,6 +519,7 @@ class AmplitudeMCPAnalytics:
                         name=bound_client.name,
                         version=bound_client.version,
                         user_agent=bound_client.user_agent,
+                        oauth_client_id=bound_client.oauth_client_id,
                     )
                     if bound_client is not None
                     else None
@@ -522,10 +534,12 @@ class AmplitudeMCPAnalytics:
                 ctx=ctx,
                 identity=identity,
                 identity_resolver=resolve_identity,
+                resolve_client_info=resolve_client_info,
                 transport_resolved=transport is not None,
             )
             # Mirror onto the last-connected fallback (see the field doc).
             self._server_ctx = ctx
+            self._client_info_resolver = resolve_client_info
             return scope
 
         def resolved_request_ctx(scope: ServerScope) -> McpServerContext | None:
@@ -536,6 +550,7 @@ class AmplitudeMCPAnalytics:
                 scope_session_id=scope.captured_session_id,
                 resolve_identity=scope.identity_resolver,
                 server_identity=scope.identity,
+                resolve_client_info=scope.resolve_client_info,
                 logger=logger,
             )
 
@@ -660,8 +675,8 @@ class AmplitudeMCPAnalytics:
 
         def on_initialized(scope: ServerScope) -> None:
             # `[MCP] Session Initialized` — the handshake only fires on the
-            # session-bearing paths (stdio, stateful streamable HTTP, sse), so
-            # this is never emitted on stateless HTTP. Resolve the floored
+            # successful initialize request, including sessionless Streamable
+            # HTTP. Resolve the floored
             # server ctx into its connection form (real anchor/identity) once,
             # in place; per-request builds still override these per call. The
             # handshake clientInfo was already captured by the stream observer.
@@ -677,7 +692,7 @@ class AmplitudeMCPAnalytics:
 
         def on_ended(scope: ServerScope, duration_ms: float) -> None:
             # `[MCP] Session Ended` on run teardown — only when a session was
-            # initialized (gates out stateless HTTP, which never handshakes).
+            # initialized and the run's transport persisted beyond one request.
             if scope.ctx is None:
                 return
             emit_session_ended(self._amplitude, scope.ctx, duration_ms=duration_ms)
