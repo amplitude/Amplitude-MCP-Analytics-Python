@@ -13,7 +13,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-from ..context.types import McpServerContext
+from ..context.types import IdentityResolver, McpServerContext
 from .identity import ServerIdentity
 
 __all__ = ["ServerScope", "current_server_scope", "scope_var"]
@@ -29,6 +29,9 @@ class ServerScope:
 
     identity: ServerIdentity | None = None
     """Identity from ``instrument_server`` opts — per-binding safe."""
+
+    identity_resolver: IdentityResolver | None = None
+    """Per-request identity resolver from ``instrument_server``."""
 
     session_start: float | None = None
     """Handshake timestamp (``time.perf_counter()`` seconds) — doubles as the

@@ -402,6 +402,7 @@ class AmplitudeMCPAnalytics:
         device_id: str | None = None,
         tenant: McpTenant | None = None,
         auth_type: str | None = None,
+        resolve_identity: IdentityResolver | None = None,
         client: McpClientInfo | Mapping[str, str] | None = None,
         session_id: str | None = None,
         protocol_version: str | None = None,
@@ -421,9 +422,11 @@ class AmplitudeMCPAnalytics:
         controls. Call **before** the server runs. Returns the same server for
         chaining. Idempotent.
 
-        The identity fields sit at the server-identity step of the fallback
-        chain, scoped to THIS server binding. ``client`` supplies MCP client
-        info resolved out-of-band (handshake / per-request values still win);
+        ``resolve_identity`` supplies identity per request for server-scope
+        events such as ``[MCP] Tools Listed`` and wins over the static identity
+        fields, which sit at the next step of the fallback chain and are scoped
+        to THIS server binding. ``client`` supplies MCP client info resolved
+        out-of-band (handshake / per-request values still win);
         ``session_id`` binds a host-managed correlation session id (a transport
         session id still wins); ``protocol_version`` is the out-of-band
         fallback; ``extra`` is enrichment attached to every event from this
@@ -518,6 +521,7 @@ class AmplitudeMCPAnalytics:
             scope = ServerScope(
                 ctx=ctx,
                 identity=identity,
+                identity_resolver=resolve_identity,
                 transport_resolved=transport is not None,
             )
             # Mirror onto the last-connected fallback (see the field doc).
@@ -530,6 +534,7 @@ class AmplitudeMCPAnalytics:
             return build_server_context(
                 scope.ctx,
                 scope_session_id=scope.captured_session_id,
+                resolve_identity=scope.identity_resolver,
                 server_identity=scope.identity,
                 logger=logger,
             )

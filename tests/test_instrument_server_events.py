@@ -11,7 +11,12 @@ the session context exits."""
 from __future__ import annotations
 
 import anyio
+import httpx
 import pytest
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import Server
 from mcp.shared.memory import (
@@ -20,7 +25,10 @@ from mcp.shared.memory import (
 )
 from mcp.types import Implementation
 
-from amplitude_mcp_analytics import MCPAnalyticsConfig
+from amplitude_mcp_analytics import (
+    MCPAnalyticsConfig,
+    SetIdentityInput,
+)
 from amplitude_mcp_analytics.testing import MockAmplitudeMCPAnalytics
 
 pytestmark = pytest.mark.anyio
@@ -131,6 +139,67 @@ async def test_emits_tools_listed_with_live_count_and_names() -> None:
     assert isinstance(props["[MCP] Response Duration"], int)
     assert isinstance(props["[MCP] Response Size"], int)
     assert props["[MCP] Response Size"] > 0
+
+
+class _TokenVerifier:
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if token != "test-token":
+            return None
+        return AccessToken(
+            token=token,
+            client_id="test-client",
+            scopes=["mcp:read"],
+            subject="alice@example.com",
+        )
+
+
+async def test_stateless_tools_list_resolves_identity_from_auth_info() -> None:
+    analytics = make_analytics()
+    mcp = FastMCP(
+        "test-mcp",
+        stateless_http=True,
+        json_response=True,
+        auth=AuthSettings(
+            issuer_url="https://auth.example.com",
+            resource_server_url="http://localhost:8000/mcp",
+            required_scopes=["mcp:read"],
+        ),
+        token_verifier=_TokenVerifier(),
+    )
+    mcp.add_tool(lambda q: "ok", name="search")
+
+    received: list[dict[str, object] | None] = []
+
+    def resolve_identity(auth_info: dict[str, object] | None) -> SetIdentityInput:
+        received.append(auth_info)
+        subject = (auth_info or {}).get("subject")
+        return SetIdentityInput(user_id=subject if isinstance(subject, str) else None)
+
+    analytics.instrument_server(mcp, resolve_identity=resolve_identity)
+
+    app = mcp.streamable_http_app()
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://localhost:8000",
+        headers={"authorization": "Bearer test-token"},
+    )
+    async with mcp.session_manager.run(), http_client:
+        async with streamable_http_client(
+            "http://localhost:8000/mcp",
+            http_client=http_client,
+            terminate_on_close=False,
+        ) as (read_stream, write_stream, _get_session_id):
+            async with ClientSession(
+                read_stream, write_stream, client_info=CLIENT
+            ) as client:
+                await client.initialize()
+                await client.list_tools()
+
+    events = analytics.get_events("[MCP] Tools Listed")
+    assert len(events) == 1
+    assert events[0]["user_id"] == "alice@example.com"
+    assert received
+    assert all((auth_info or {}).get("subject") == "alice@example.com" for auth_info in received)
 
 
 async def test_tools_listed_reflects_tools_added_after_connect() -> None:
