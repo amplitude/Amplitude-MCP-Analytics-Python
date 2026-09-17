@@ -103,16 +103,25 @@ Practical notes:
   edit either gets overwritten or makes the next bump compute from the wrong
   base. Review the Release PR instead — editing the version there is the
   supported way to override a bump.
-- **Release PRs run full CI.** The workflow mints a GitHub App token for
-  release-please precisely so its PRs trigger `test.yml` and `semantic-pr.yml`
-  — GitHub does not start workflows for events authored by the default
-  `GITHUB_TOKEN`.
+- **Release PRs run full CI when the GitHub App credentials are present.** The
+  workflow mints a GitHub App token for release-please precisely so its PRs
+  trigger `test.yml` and `semantic-pr.yml` — GitHub does not start workflows
+  for events authored by the default `GITHUB_TOKEN`. If
+  `AMPLITUDE_DEV_EXP_APP_ID` / `AMPLITUDE_DEV_EXP_PRIVATE_KEY` aren't set on
+  the `pypi-release` environment, the workflow logs a warning and falls back to
+  `GITHUB_TOKEN`: releases still cut and still publish, but the Release PR
+  arrives without check runs, so review it by hand. The `publish` job re-runs
+  `pyright` and the test suite against the merged commit regardless.
 - **PyPI upload uses OIDC Trusted Publishing** (`uv publish
   --trusted-publishing always`) from the `pypi-release` environment. There is
   no PyPI token in the repo; don't add one. The header comment in
   `.github/workflows/release-please.yml` lists everything infra provisions —
   including the fact that PyPI matches the Trusted Publisher on the workflow's
   *filename*, so renaming that file breaks publishing.
+- **A failed upload doesn't need a new version.** The tag and GitHub release
+  are already created by the time `publish` runs, so if the upload fails (a
+  missing Trusted Publisher, say), fix the cause and use **Re-run failed jobs**
+  on that workflow run instead of cutting another release.
 - The package is pre-1.0, so release-please's defaults apply: `feat:` bumps the
   minor version and a breaking change bumps to `1.0.0`. If we'd rather stay
   below 1.0 through a breaking change, that's the `bump-minor-pre-major` option

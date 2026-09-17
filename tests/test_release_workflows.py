@@ -14,6 +14,9 @@ and easy to weaken by accident, so they are pinned here:
 * **No credentials.** Trusted Publishing needs `id-token: write` and *no*
   secret. Reintroducing a `PYPI_TOKEN` would work, which is exactly why the
   absence has to be asserted rather than assumed.
+* **Optional App credentials.** The GitHub App token only buys CI on the
+  Release PR, so its absence has to degrade to `GITHUB_TOKEN` — loudly —
+  rather than fail the job and block every release.
 
 `release-please-config.json` / `.release-please-manifest.json` and the
 assumptions the `python` release type makes about this repo's layout are
@@ -82,6 +85,11 @@ def steps(job: str) -> list[dict[str, Any]]:
 
 def run_scripts(job: str) -> list[str]:
     return [str(step.get("run", "")) for step in steps(job)]
+
+
+def step_using(job: str, action: str) -> dict[str, Any]:
+    # Not every step has a `uses` — some are plain `run` steps.
+    return next(step for step in steps(job) if action in str(step.get("uses", "")))
 
 
 def uses_lines() -> list[str]:
@@ -163,6 +171,39 @@ class TestActionsArePinned:
         }
         for action, sha in EXPECTED_PINS.items():
             assert pinned.get(action) == sha
+
+
+class TestReleasePleaseAuthentication:
+    """Missing App credentials must degrade, not break the release."""
+
+    def test_the_app_token_step_is_conditional_on_both_secrets(self) -> None:
+        # A step-level `if:` cannot read the secrets context, so the presence
+        # check is resolved into job-level env first. Requiring *both* keeps a
+        # half-provisioned environment from failing inside the action.
+        presence_check = str(jobs()["release-please"]["env"]["HAS_APP_CREDENTIALS"])
+        for secret in EXPECTED_SECRETS:
+            assert f"secrets.{secret} != ''" in presence_check
+
+        token_step = step_using("release-please", "create-github-app-token")
+        assert str(token_step["if"]).strip() == "env.HAS_APP_CREDENTIALS == 'true'"
+
+    def test_release_please_falls_back_to_the_default_token(self) -> None:
+        # Without this fallback the whole job fails when the App credentials
+        # are absent, and no release is ever cut.
+        release_step = step_using("release-please", "release-please-action")
+        assert (
+            str(release_step["with"]["token"]).strip()
+            == "${{ steps.app-token.outputs.token || github.token }}"
+        )
+
+    def test_the_fallback_is_announced(self) -> None:
+        # Silently losing CI on Release PRs is the failure mode to avoid.
+        warning = next(
+            step
+            for step in steps("release-please")
+            if "::warning::" in str(step.get("run", ""))
+        )
+        assert str(warning["if"]).strip() == "env.HAS_APP_CREDENTIALS != 'true'"
 
 
 class TestPublishGate:
@@ -289,9 +330,7 @@ class TestReleasePleaseConfiguration:
         assert manifest()["."] == pyproject_version()
 
     def test_the_workflow_points_at_these_files(self) -> None:
-        release_step = next(
-            step for step in steps("release-please") if "release-please-action" in step["uses"]
-        )
+        release_step = step_using("release-please", "release-please-action")
         assert release_step["with"]["config-file"] == CONFIG_PATH.name
         assert release_step["with"]["manifest-file"] == MANIFEST_PATH.name
 

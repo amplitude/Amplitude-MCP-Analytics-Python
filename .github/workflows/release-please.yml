@@ -6,22 +6,11 @@ name: release-please
 # release and publishes the built artifacts to PyPI.
 #
 # ---------------------------------------------------------------------------
-# INFRA MUST PROVISION THE FOLLOWING — NOTHING HERE IS SELF-CONFIGURING.
-# Until all three exist, both jobs below fail (they do not silently no-op):
+# WHAT INFRA HAS TO PROVISION — NOTHING HERE IS SELF-CONFIGURING.
 #
-#   1. A GitHub Actions environment named `pypi-release` on
-#      amplitude/Amplitude-MCP-Analytics-Python. Both jobs run in it. It must
-#      NOT carry a required-reviewer protection rule unless a human approving
-#      every push to main is intended — the rule gates the `release-please`
-#      job too, not just publishing.
+# REQUIRED to publish (the `publish` job fails without it):
 #
-#   2. Two secrets on that environment (not repo- or org-level secrets):
-#        - AMPLITUDE_DEV_EXP_APP_ID
-#        - AMPLITUDE_DEV_EXP_PRIVATE_KEY
-#      Same GitHub App credentials Amplitude-TypeScript / developer-cli use on
-#      their `npm-release` environment; infra copies them across.
-#
-#   3. A PyPI Trusted Publisher on the `amplitude-mcp-analytics` project:
+#   1. A PyPI Trusted Publisher on the `amplitude-mcp-analytics` project:
 #        owner:       amplitude
 #        repository:  Amplitude-MCP-Analytics-Python
 #        workflow:    release-please.yml     <- this file's name; renaming the
@@ -31,6 +20,22 @@ name: release-please
 #      PyPI *pending* publisher before the first release, then it converts to a
 #      normal publisher on first upload. There is no PyPI API token anywhere in
 #      this repo and none should be added.
+#
+#   2. A GitHub Actions environment named `pypi-release`. Both jobs run in it.
+#      It must NOT carry a required-reviewer protection rule unless a human
+#      approving every push to main is intended — the rule gates the
+#      `release-please` job too, not just publishing.
+#
+# OPTIONAL, and only affects CI coverage on the Release PR:
+#
+#   3. Two secrets on the `pypi-release` environment (not repo- or org-level):
+#        - AMPLITUDE_DEV_EXP_APP_ID
+#        - AMPLITUDE_DEV_EXP_PRIVATE_KEY
+#      Same GitHub App credentials Amplitude-TypeScript / developer-cli use on
+#      their `npm-release` environment; infra copies them across. When they are
+#      absent, release-please falls back to the default GITHUB_TOKEN — releases
+#      still cut and still publish, but see the comment on the token step for
+#      what is lost. Adding the secrets later needs no change to this file.
 # ---------------------------------------------------------------------------
 
 on:
@@ -58,23 +63,40 @@ jobs:
     # AMPLITUDE_DEV_EXP_* live on the pypi-release environment (mirroring
     # developer-cli's npm-release), not repo/org secrets.
     environment: pypi-release
+    env:
+      # Resolved here because a step-level `if:` cannot read the secrets
+      # context, only the env one.
+      HAS_APP_CREDENTIALS: ${{ secrets.AMPLITUDE_DEV_EXP_APP_ID != '' && secrets.AMPLITUDE_DEV_EXP_PRIVATE_KEY != '' }}
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
     steps:
-      # Mint a GitHub App installation token so release-please's PRs trigger
-      # downstream workflows (GITHUB_TOKEN-authored events do not, by design,
-      # which would leave test.yml and semantic-pr.yml unrun and the Release PR
-      # BLOCKED behind required checks — or merged with no CI at all).
+      # Preferred path: a GitHub App installation token, so release-please's
+      # PRs trigger downstream workflows. Events authored by the default
+      # GITHUB_TOKEN do not start workflows, by design, which leaves test.yml
+      # and semantic-pr.yml unrun on the Release PR.
       - uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
         id: app-token
+        if: env.HAS_APP_CREDENTIALS == 'true'
         with:
           app-id: ${{ secrets.AMPLITUDE_DEV_EXP_APP_ID }}
           private-key: ${{ secrets.AMPLITUDE_DEV_EXP_PRIVATE_KEY }}
 
+      - name: Note the GITHUB_TOKEN fallback
+        if: env.HAS_APP_CREDENTIALS != 'true'
+        run: |
+          echo "::warning::AMPLITUDE_DEV_EXP_APP_ID / AMPLITUDE_DEV_EXP_PRIVATE_KEY are not set on the pypi-release environment; using GITHUB_TOKEN. Release PRs will not run test.yml or semantic-pr.yml — review them by hand. The publish job re-runs the full suite before uploading."
+
+      # Falling back to GITHUB_TOKEN keeps releases flowing while the App
+      # credentials are missing. `main` has no required status checks, so an
+      # unchecked Release PR is reviewable and mergeable, and the publish job
+      # below re-runs pyright and the test suite against the merged commit —
+      # nothing untested reaches PyPI either way. The fallback does require
+      # "Allow GitHub Actions to create and approve pull requests" to be
+      # enabled for the repo; without it release-please cannot open its PR.
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -156,5 +178,9 @@ jobs:
       # pypa/gh-action-pypi-publish would do the same thing, but the org's
       # CI-pinning policy restricts third-party `uses:` lines and uv is already
       # this repo's only packaging tool.
+      #
+      # If this step fails because the Trusted Publisher is not configured yet,
+      # the tag and GitHub release already exist: configure PyPI, then use
+      # "Re-run failed jobs" on this run rather than cutting a second version.
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always
