@@ -81,9 +81,10 @@ it is the line customers will read.
 
 ## Release flow
 
-Releases are automated end to end by
+Normal releases are automated end to end by
 [release-please](https://github.com/googleapis/release-please); there is no
-manual bump, no manual tag, and nothing to dispatch.
+manual bump or tag. Manual workflow dispatch exists only to recover an
+already-created release whose PyPI upload did not complete.
 
 1. **You merge a normal PR to `main`.** Nothing else to do.
 2. **`release-please.yml` opens (or updates) a Release PR** titled
