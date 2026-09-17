@@ -224,6 +224,16 @@ class TestReleasePRLockfile:
         for command in ("uv lock", "git add uv.lock", "git commit", "git push"):
             assert command in script
 
+    def test_release_merge_does_not_parse_an_absent_pr_output(self) -> None:
+        update = next(
+            step
+            for step in steps("release-please")
+            if step.get("name") == "Update the Release PR lockfile"
+        )
+        assert "env" not in update
+        assert "fromJSON" not in update["run"]
+        assert "git branch --show-current" in update["run"]
+
     def test_the_committed_lockfile_matches_the_project(self) -> None:
         assert root_lock_version() == pyproject_version()
 

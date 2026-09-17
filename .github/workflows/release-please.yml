@@ -94,9 +94,13 @@ jobs:
 
       - name: Update the Release PR lockfile
         if: steps.release.outputs.prs_created == 'true'
-        env:
-          RELEASE_BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
         run: |
+          RELEASE_BRANCH="$(git branch --show-current)"
+          if [[ -z "${RELEASE_BRANCH}" ]]; then
+            echo "The Release PR checkout is not on a branch"
+            exit 1
+          fi
+
           uv lock
 
           if git diff --quiet -- uv.lock; then
