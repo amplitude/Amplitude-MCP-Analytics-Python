@@ -59,7 +59,7 @@ match wins):
 | Order | Source | Identity `resolvedFrom` |
 | -- | -- | -- |
 | 1 | `analytics.set_identity(user_id=..., ...)` called during the request | `explicit` |
-| 2 | `resolve_identity(auth_info)` callback (per-tool opt-in) returning a non-empty result | `authInfo` |
+| 2 | `resolve_identity(auth_info)` callback bound to `instrument_server` or `instrument_tool`, returning a non-empty result | `authInfo` |
 | 3 | Static identity from `instrument_server(server, user_id=..., device_id=..., tenant=...)` | `explicit` |
 | 4 | Correlation anchor available (process / session id / trace) | `anchor` |
 | 5 | Anonymous per-request floor | `anonymous` |
@@ -171,10 +171,10 @@ Marks the start of a protocol session.
   sessionless Streamable HTTP.
 - **Toggle:** `autocapture.session_lifecycle` (defaults to
   `autocapture.server_events`).
-- **Identity:** resolved at the handshake from the static `instrument_server`
-  identity, else the anchor (the transport's session id, or the process on
-  stdio). Per-request sources (`set_identity`, `resolve_identity`) don't apply
-  — no tool call is in flight.
+- **Identity:** resolved at the handshake from the `resolve_identity` callback
+  passed to `instrument_server`, then its static identity, then the anchor (the
+  transport's session id, or the process on stdio). `set_identity` does not
+  apply because no tool handler is in flight.
 
 **Properties:** the [shared properties](#shared-properties) and the
 server-scope `extra` bag only; this event has no event-specific properties.
@@ -210,9 +210,9 @@ call time (tools added or removed after startup are reflected).
   applies per request.
 - **Toggle:** `autocapture.tools_listed` (defaults to
   `autocapture.server_events`).
-- **Identity:** resolved per request through the fallback chain, minus the
-  per-tool sources (`set_identity` needs a tool handler in flight;
-  `resolve_identity` is bound per tool).
+- **Identity:** resolved per request through the fallback chain using the
+  `resolve_identity` callback passed to `instrument_server`. `set_identity`
+  does not apply because no tool handler is in flight.
 
 **Event-specific properties:**
 
@@ -349,9 +349,9 @@ reserved key that per-tool dashboards slice on.
 - **Transports:** all. On stateless HTTP the [skip rule](#emission-guarantees)
   applies per request.
 - **Toggle:** `autocapture.tool_calls`.
-- **Identity:** resolved per request through the fallback chain, minus the
-  per-tool sources (`set_identity` needs a tool handler in flight;
-  `resolve_identity` is bound per tool).
+- **Identity:** resolved per request through the fallback chain using the
+  `resolve_identity` callback passed to `instrument_server`. `set_identity`
+  does not apply because no tool handler is in flight.
 
 **Event-specific properties:**
 

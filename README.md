@@ -182,30 +182,37 @@ async def search(query: str) -> str:
     analytics.set_identity(user_id=my_auth.get_login_id())
     return await do_work(query)
 
-# 3. Opt-in, derived from the request's auth info (you map the claims).
+# 3. Opt-in, derived from the request's verified auth info (you map the claims).
+#    Pass the same resolver to the server and its tools so every event resolves
+#    the caller consistently.
+resolve_identity = lambda auth_info: SetIdentityInput(
+    user_id=(auth_info or {}).get("subject"),
+)
+analytics.instrument_server(mcp, resolve_identity=resolve_identity)
+
 @mcp.tool()
 @analytics.instrument_tool(
     name="lookup",
-    resolve_identity=lambda auth_info: SetIdentityInput(
-        user_id=(auth_info or {}).get("client_id"),
-    ),
+    resolve_identity=resolve_identity,
 )
 async def lookup(doc_id: str) -> str: ...
 ```
 
 `set_identity` also accepts a positional `SetIdentityInput` instead of the
 keyword arguments — handy for forwarding a value you already hold, which is
-exactly what a `resolve_identity` callback returns:
-`analytics.set_identity(resolve_identity(auth_info))`. Passing both spellings in
+exactly what a `resolve_identity` callback returns. Passing both spellings in
 one call raises `ValueError`.
 
 The `resolve_identity` callback receives the request's auth info as a plain
-dict — the access token the MCP SDK's auth middleware validated (`client_id`,
-`scopes`, plus whatever claims your token model carries). One transport nuance
-the SDK absorbs for you: under **stateful** Streamable HTTP the session runs in
-a different task than the HTTP request, so the SDK reads the token from the
-request's ASGI scope — the SDK's `get_access_token()` contextvar alone is not
-visible there.
+dict — the access-token information produced by the MCP server's token
+verifier (`client_id`, `scopes`, `subject`, and optional claims). The SDK passes
+this value to your resolver but never emits it. Your resolver owns the mapping
+and may ignore `auth_info` in favor of identity your application already made
+available through trusted request-local state. One transport nuance the SDK
+absorbs for you:
+under **stateful** Streamable HTTP the session runs in a different task than
+the HTTP request, so the SDK reads the token from the request's ASGI scope —
+the SDK's `get_access_token()` contextvar alone is not visible there.
 
 Resolution order (first match wins): `set_identity()` → `resolve_identity()` →
 `instrument_server` options → correlation anchor → an anonymous floor. When no

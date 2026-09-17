@@ -409,6 +409,7 @@ class AmplitudeMCPAnalytics:
         device_id: str | None = None,
         tenant: McpTenant | None = None,
         auth_type: str | None = None,
+        resolve_identity: IdentityResolver | None = None,
         client: McpClientInfo | Mapping[str, str] | None = None,
         resolve_client_info: ClientInfoResolver | None = None,
         session_id: str | None = None,
@@ -429,9 +430,11 @@ class AmplitudeMCPAnalytics:
         controls. Call **before** the server runs. Returns the same server for
         chaining. Idempotent.
 
-        The identity fields sit at the server-identity step of the fallback
-        chain, scoped to THIS server binding. ``client`` supplies MCP client
-        info resolved out-of-band (handshake / per-request values still win);
+        ``resolve_identity`` supplies identity per request for server-scope
+        events such as ``[MCP] Tools Listed`` and wins over the static identity
+        fields, which sit at the next step of the fallback chain and are scoped
+        to THIS server binding. ``client`` supplies MCP client info resolved
+        out-of-band (handshake / per-request values still win);
         ``resolve_client_info`` supplies client fields per request from its
         OAuth claims or HTTP headers and wins over SDK-derived sources.
         ``session_id`` binds a host-managed correlation session id (a transport
@@ -530,6 +533,7 @@ class AmplitudeMCPAnalytics:
             scope = ServerScope(
                 ctx=ctx,
                 identity=identity,
+                identity_resolver=resolve_identity,
                 resolve_client_info=resolve_client_info,
                 transport_resolved=transport is not None,
             )
@@ -544,8 +548,9 @@ class AmplitudeMCPAnalytics:
             return build_server_context(
                 scope.ctx,
                 scope_session_id=scope.captured_session_id,
+                resolve_identity=scope.identity_resolver,
                 server_identity=scope.identity,
-                resolve_client_info=resolve_client_info,
+                resolve_client_info=scope.resolve_client_info,
                 logger=logger,
             )
 
