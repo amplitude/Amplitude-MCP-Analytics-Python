@@ -12,6 +12,18 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.3.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.2.0...v0.3.0) (2026-09-17)
+
+
+### Features
+
+* resolve identity for server-scope events ([#8](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/8)) ([46921b3](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/46921b32f4fa576e7f69a029057bce9cabebaaa2))
+
+
+### Bug Fixes
+
+* resolve client identity on sessionless Streamable HTTP ([#6](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/6)) ([7e36350](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/7e36350cdca248957dfa906b197f2b93c5b240ed))
+
 ## [0.2.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.1.0...v0.2.0) (2026-09-11)
 
 
