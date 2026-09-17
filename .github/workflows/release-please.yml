@@ -37,6 +37,14 @@ on:
   push:
     branches:
       - main
+  # Recovery path for a release whose tag/GitHub release was created but whose
+  # PyPI upload did not complete. The selected tag is validated before build.
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish (for example, v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -66,12 +74,14 @@ jobs:
       # which would leave test.yml and semantic-pr.yml unrun and the Release PR
       # BLOCKED behind required checks — or merged with no CI at all).
       - uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2.0.6
+        if: github.event_name == 'push'
         id: app-token
         with:
           app-id: ${{ secrets.AMPLITUDE_DEV_EXP_APP_ID }}
           private-key: ${{ secrets.AMPLITUDE_DEV_EXP_PRIVATE_KEY }}
 
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        if: github.event_name == 'push'
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -118,15 +128,51 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-24.04
     needs: release-please
-    # Only the push that merges a Release PR sets this; every other push to
-    # main lands here as 'false' and the job is skipped.
-    if: needs.release-please.outputs.releases_created == 'true'
+    # Automatic uploads require release-please's trusted output. Maintainers
+    # can also retry an interrupted upload by explicitly dispatching a tag;
+    # the checkout and package version are validated below before publishing.
+    if: >-
+      needs.release-please.outputs.releases_created == 'true' ||
+      github.event_name == 'workflow_dispatch'
     environment: pypi-release
     steps:
+      - name: Validate the manual release tag input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must have the form vX.Y.Z"
+            exit 1
+          fi
+
       - name: Checkout the repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}
+
+      - name: Validate the manual release checkout
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ! TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"; then
+            echo "::error::Release tag does not exist: ${RELEASE_TAG}"
+            exit 1
+          fi
+
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [[ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]]; then
+            echo "::error::Checkout does not match release tag ${RELEASE_TAG}"
+            exit 1
+          fi
+
+          PACKAGE_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "v${PACKAGE_VERSION}" != "${RELEASE_TAG}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match package version ${PACKAGE_VERSION}"
+            exit 1
+          fi
 
       # uv is installed from PyPI via the runner's Python (no third-party setup
       # action), the same way test.yml does it.

@@ -113,6 +113,16 @@ Practical notes:
   `.github/workflows/release-please.yml` lists everything infra provisions —
   including the fact that PyPI matches the Trusted Publisher on the workflow's
   *filename*, so renaming that file breaks publishing.
+- **Recover an interrupted PyPI upload with a manual workflow run.** If
+  release-please created the tag and GitHub release but the publish job did not
+  complete, run the `release-please` workflow from `main` and provide the
+  existing `vX.Y.Z` tag. The workflow checks out that exact tag, verifies it
+  matches the package version, and runs the normal checks, build, and trusted
+  upload. Do not rerun the original failed workflow: GitHub reruns use its
+  original workflow revision, and release-please will not create the same
+  release twice. From the command line, run
+  `gh workflow run release-please.yml --ref main -f release_tag=v0.3.0`,
+  replacing `v0.3.0` with the release that needs recovery.
 - The package is pre-1.0, so release-please's defaults apply: `feat:` bumps the
   minor version and a breaking change bumps to `1.0.0`. If we'd rather stay
   below 1.0 through a breaking change, that's the `bump-minor-pre-major` option

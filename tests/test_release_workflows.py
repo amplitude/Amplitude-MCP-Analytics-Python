@@ -130,8 +130,19 @@ class TestTheOldFlowIsGone:
 
 
 class TestWorkflowShape:
-    def test_it_runs_on_pushes_to_main_only(self) -> None:
-        assert triggers() == {"push": {"branches": ["main"]}}
+    def test_it_runs_on_pushes_to_main_or_manual_recovery(self) -> None:
+        assert triggers() == {
+            "push": {"branches": ["main"]},
+            "workflow_dispatch": {
+                "inputs": {
+                    "release_tag": {
+                        "description": "Existing release tag to publish (for example, v0.3.0)",
+                        "required": True,
+                        "type": "string",
+                    }
+                }
+            },
+        }
 
     def test_runners_are_version_pinned(self) -> None:
         # `ubuntu-latest` silently rolls the publish environment under us.
@@ -175,11 +186,18 @@ class TestPublishGate:
 
     def test_publish_is_gated_on_releases_created(self) -> None:
         condition = str(jobs()["publish"]["if"]).strip()
-        assert condition == "needs.release-please.outputs.releases_created == 'true'"
+        assert "needs.release-please.outputs.releases_created == 'true'" in condition
 
-    def test_the_gate_has_no_alternative_branch(self) -> None:
-        # A single `||` would let some other condition carry the publish.
-        assert "||" not in str(jobs()["publish"]["if"])
+    def test_the_only_alternative_gate_is_manual_dispatch(self) -> None:
+        condition = str(jobs()["publish"]["if"]).strip()
+        assert condition == (
+            "needs.release-please.outputs.releases_created == 'true' || "
+            "github.event_name == 'workflow_dispatch'"
+        )
+
+    def test_release_please_only_runs_for_pushes(self) -> None:
+        guarded_steps = steps("release-please")[:2]
+        assert all(step["if"] == "github.event_name == 'push'" for step in guarded_steps)
 
     def test_only_two_jobs_exist(self) -> None:
         # A third job would need its own gate; today there is nothing to miss.
@@ -187,6 +205,34 @@ class TestPublishGate:
 
 
 class TestPublishGatesAndTooling:
+    def test_manual_publish_checks_out_and_validates_the_requested_tag(self) -> None:
+        publish_steps = steps("publish")
+        validate_input = next(
+            step
+            for step in publish_steps
+            if step.get("name") == "Validate the manual release tag input"
+        )
+        checkout = next(step for step in publish_steps if step.get("name") == "Checkout the repository")
+        validate_checkout = next(
+            step
+            for step in publish_steps
+            if step.get("name") == "Validate the manual release checkout"
+        )
+
+        assert publish_steps.index(validate_input) < publish_steps.index(checkout)
+        assert validate_input["if"] == "github.event_name == 'workflow_dispatch'"
+        assert validate_input["env"] == {"RELEASE_TAG": "${{ inputs.release_tag }}"}
+        assert "^v[0-9]+" in validate_input["run"]
+
+        assert checkout["with"]["ref"] == (
+            "${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}"
+        )
+
+        assert validate_checkout["if"] == "github.event_name == 'workflow_dispatch'"
+        assert validate_checkout["env"] == {"RELEASE_TAG": "${{ inputs.release_tag }}"}
+        for check in ("refs/tags/", "git rev-parse HEAD", "pyproject.toml", "PACKAGE_VERSION"):
+            assert check in validate_checkout["run"]
+
     def test_the_checks_run_before_the_upload(self) -> None:
         scripts = run_scripts("publish")
         index = {
