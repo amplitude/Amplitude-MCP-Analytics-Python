@@ -35,11 +35,11 @@ import functools
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import ErrorMessageSanitizer
+from ..config import DEFAULT_PARAM_NEVER_KEYS, ErrorMessageSanitizer
 from ..context.types import (
     ClientInfoResolver,
     IdentityResolver,
@@ -56,6 +56,11 @@ from ..errors import build_tool_error, classify_error, error_message_from_result
 from ..types import AmplitudeClientLike
 from ..utils.logger import get_logger
 from .events import emit_tool_call_response
+from .param_capture import (
+    ResolvedToolParamCapture,
+    capture_param_properties,
+    resolve_tool_param_capture,
+)
 
 __all__ = ["InstrumentToolDependencies", "instrument_tool"]
 
@@ -101,7 +106,63 @@ class InstrumentToolDependencies:
     sanitize_error_message: ErrorMessageSanitizer | None = None
     """Rewrites/drops ``[MCP] Error Message``, from ``config.sanitize_error_message``."""
 
+    capture_param_shape: bool = True
+    """Whether content-free parameter shape capture is enabled. From
+    ``config.param_capture.shape``."""
+
+    param_never_keys: tuple[str, ...] | None = None
+    """Global parameter keys excluded from capture. ``None`` uses
+    ``DEFAULT_PARAM_NEVER_KEYS``. An empty tuple excludes nothing."""
+
     logger: logging.Logger | None = None
+
+
+def _is_fastmcp_context(value: Any) -> bool:
+    """True for FastMCP's injected ``Context``.
+
+    That object is the Python stand-in for Node's trailing ``extra`` argument,
+    which is not a tool parameter. Matching the class name and module keeps
+    this check free of an import of ``mcp`` (the SDK duck-types that package).
+    @internal
+    """
+    cls = type(value)
+    module = cls.__module__
+    return cls.__name__ == "Context" and (
+        module == "mcp.server.fastmcp" or module.startswith("mcp.server.fastmcp.")
+    )
+
+
+def _without_injected_context(params: Mapping[Any, Any]) -> dict[str, Any] | None:
+    """Drop injected ``Context`` values. An argument object that contained only
+    those values is not a parameter payload, so capture is omitted. An empty
+    mapping is kept: it is a schema-taking call that supplied nothing."""
+    dropped_context = False
+    kept: dict[str, Any] = {}
+    for key, value in params.items():
+        if _is_fastmcp_context(value):
+            dropped_context = True
+            continue
+        if isinstance(key, str):
+            kept[key] = value
+    if not kept and dropped_context:
+        return None
+    return kept
+
+
+def _tool_params(
+    call_args: tuple[Any, ...], call_kwargs: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The argument object capture reads.
+
+    FastMCP calls tools with keyword arguments. A low-level handler receives
+    the argument object as its first positional parameter. Same choice as
+    request-size measurement. @internal
+    """
+    if call_kwargs:
+        return _without_injected_context(call_kwargs)
+    if call_args and isinstance(call_args[0], Mapping):
+        return _without_injected_context(call_args[0])
+    return None
 
 
 def _is_async_callable(obj: Any) -> bool:
@@ -134,6 +195,28 @@ def instrument_tool(
     tools via ``AmplitudeMCPAnalytics.instrument_tool(handler, meta)``.
     """
     warned_unbound = False
+    capture_resolution = resolve_tool_param_capture(meta.param_capture)
+    logger = deps.logger if deps.logger is not None else get_logger()
+    never_keys = (
+        deps.param_never_keys
+        if deps.param_never_keys is not None
+        else DEFAULT_PARAM_NEVER_KEYS
+    )
+    capture: ResolvedToolParamCapture | None = (
+        None if capture_resolution.disabled else capture_resolution.policy
+    )
+    continuation = (
+        "is disabled for this tool"
+        if capture_resolution.disabled
+        else "will continue, ignoring the invalid fields"
+    )
+    for warning in capture_resolution.warnings:
+        logger.warning(
+            "AmplitudeMCPAnalytics: instrument_tool('%s') %s; parameter capture %s.",
+            meta.name,
+            warning,
+            continuation,
+        )
 
     def _begin() -> tuple[McpToolContext | None, float]:
         nonlocal warned_unbound
@@ -220,6 +303,27 @@ def instrument_tool(
         elif call_args:
             request_payload = call_args[0]
 
+        param_properties: dict[str, Any] | None = None
+        if not capture_resolution.disabled:
+            try:
+                params = _tool_params(call_args, call_kwargs)
+                if params is not None:
+                    captured = capture_param_properties(
+                        params,
+                        shape=deps.capture_param_shape,
+                        never_keys=never_keys,
+                        policy=capture,
+                        logger=logger,
+                        tool_name=meta.name,
+                    )
+                    param_properties = {**captured.tier1, **captured.tier2}
+            except Exception:  # noqa: BLE001 — capture must not change the tool result
+                logger.debug(
+                    "AmplitudeMCPAnalytics: parameter capture for '%s' failed; "
+                    "parameter properties were omitted.",
+                    meta.name,
+                )
+
         # `payload_byte_size`, not plain `byte_size`: handler arguments and
         # returns are not always plain data. A low-level handler may return a
         # pydantic `CallToolResult` (the shape `is_error_result` already
@@ -234,6 +338,7 @@ def instrument_tool(
             duration_ms=duration_ms,
             request_size_bytes=payload_byte_size(request_payload),
             response_size_bytes=payload_byte_size(returned) if not raised else None,
+            param_properties=param_properties,
             sanitize=deps.sanitize_error_message,
         )
 

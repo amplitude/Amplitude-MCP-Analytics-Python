@@ -62,6 +62,28 @@ class TestAutocaptureNormalization:
         )
 
 
+class TestParamCapture:
+    def test_defaults_shape_on_and_excludes_injected_host_metadata_keys(self) -> None:
+        from amplitude_mcp_analytics import DEFAULT_PARAM_NEVER_KEYS
+
+        resolved = MCPAnalyticsConfig().param_capture
+        assert resolved.shape is True
+        assert resolved.never_keys == DEFAULT_PARAM_NEVER_KEYS
+
+    def test_accepts_the_shape_off_switch_and_custom_exclusions(self) -> None:
+        resolved = MCPAnalyticsConfig(
+            param_capture={"shape": False, "never_keys": ["private"]}
+        ).param_capture
+        assert resolved.shape is False
+        assert resolved.never_keys == ("private",)
+
+    def test_allows_an_empty_exclusion_list_and_drops_invalid_entries(self) -> None:
+        assert MCPAnalyticsConfig(param_capture={"never_keys": []}).param_capture.never_keys == ()
+        assert MCPAnalyticsConfig(
+            param_capture={"never_keys": ["safe", 42]}  # type: ignore[list-item]
+        ).param_capture.never_keys == ("safe",)
+
+
 class TestEmitAnonymousEvent:
     def test_defaults_to_false(self) -> None:
         # Node checks both `new MCPAnalyticsConfig()` and `({})`; Python has a

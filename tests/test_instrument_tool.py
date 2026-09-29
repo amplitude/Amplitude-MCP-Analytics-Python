@@ -576,3 +576,221 @@ async def test_tool_error_inside_the_handler_preserves_the_ctx_error_code() -> N
     assert props["[MCP] Error Code"] == "missing_chart_id"  # host code preserved
     assert props["[MCP] Error Type"] == "returned_error"
     assert props["[MCP] Error Message"] == "No chart ID was provided."
+
+
+def _fastmcp_context() -> Any:
+    """Stand-in for ``mcp.server.fastmcp.server.Context``. The wrapper identifies
+    it by class name and module, so the test does not construct a live session."""
+
+    class Context:
+        __module__ = "mcp.server.fastmcp.server"
+
+        def __init__(self) -> None:
+            self.session_token = "secret-token-value"
+
+    return Context()
+
+
+@pytest.mark.anyio
+async def test_captures_shape_and_derived_metadata_for_a_kwargs_handler() -> None:
+    mock = make_mock()
+
+    async def handler(q: str, limit: int) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        name="search_docs",
+        param_capture={
+            "derive": lambda params: {"hasLimit": isinstance(params.get("limit"), int)}
+        },
+    )
+    bind(mock)
+
+    await wrapped(q="private search", limit=10)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["limit", "q"]
+    assert props["[MCP] Param Count"] == 2
+    assert props["[MCP] Param Shape"] == "limit:num;q:str[1-32]"
+    assert len(props["[MCP] Param Fingerprint"]) == 12
+    assert props["[MCP] Param: hasLimit"] is True
+    assert "private search" not in json.dumps(props)
+
+
+@pytest.mark.anyio
+async def test_drops_an_injected_fastmcp_context_from_parameter_capture() -> None:
+    mock = make_mock()
+
+    async def handler(q: str, ctx: Any) -> dict[str, Any]:
+        assert ctx.session_token == "secret-token-value"
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    await wrapped(q="hi", ctx=_fastmcp_context())
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["q"]
+    assert props["[MCP] Param Shape"] == "q:str[1-32]"
+    assert "secret-token-value" not in json.dumps(props)
+    # The Context is still part of the call the size measurement sees, and it
+    # has no JSON form, so the size stays absent.
+    assert "[MCP] Request Size" not in props
+
+
+@pytest.mark.anyio
+async def test_omits_parameter_properties_when_the_only_argument_is_context() -> None:
+    mock = make_mock()
+
+    async def handler(ctx: Any) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="no_args")
+    bind(mock)
+
+    await wrapped(ctx=_fastmcp_context())
+
+    assert "[MCP] Param Shape" not in mock.get_events(RESPONSE)[0]["event_properties"]
+
+
+@pytest.mark.anyio
+async def test_can_disable_shape_capture_while_retaining_an_opted_in_derive() -> None:
+    mock = make_mock(MCPAnalyticsConfig(param_capture={"shape": False}))
+
+    async def handler(limit: int) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture={"derive": lambda _params: {"range": 30}}),
+    )
+    bind(mock)
+
+    await wrapped(limit=10)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert "[MCP] Param Shape" not in props
+    assert props["[MCP] Param: range"] == 30
+
+
+@pytest.mark.anyio
+async def test_omits_parameter_properties_for_handlers_without_arguments() -> None:
+    mock = make_mock()
+
+    async def handler() -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="no_args")
+    bind(mock)
+
+    await wrapped()
+
+    assert "[MCP] Param Shape" not in mock.get_events(RESPONSE)[0]["event_properties"]
+
+
+def test_captures_shape_when_a_handler_raises() -> None:
+    mock = make_mock()
+
+    def handler(q: str) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        wrapped(q="private")
+
+    assert mock.get_events(RESPONSE)[0]["event_properties"]["[MCP] Param Shape"] == "q:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_captures_shape_for_an_in_band_error_result() -> None:
+    mock = make_mock()
+
+    async def handler(limit: int) -> dict[str, Any]:
+        return {"isError": True, "content": [{"type": "text", "text": "failed"}]}
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    await wrapped(limit=500)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Is Error"] is True
+    assert props["[MCP] Param Shape"] == "limit:num"
+
+
+@pytest.mark.anyio
+async def test_warns_on_a_mistyped_route_key_but_still_emits_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    async def handler(q: str) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture={"route_key": 42}),  # type: ignore[typeddict-item]
+    )
+    bind(mock)
+
+    await wrapped(q="private")
+
+    assert len(caplog.records) == 1
+    assert "invalid fields" in caplog.records[0].getMessage()
+    assert mock.get_events(RESPONSE)[0]["event_properties"]["[MCP] Param Shape"] == "q:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_a_capture_failure_does_not_change_the_tool_result(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    class Exploding(dict[str, Any]):
+        def items(self) -> Any:
+            raise TypeError("parameters were inspected")
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    result = await wrapped(Exploding(q="hi"))
+
+    assert result == OK
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert "[MCP] Param Shape" not in props
+    assert any("parameter capture for 'search_docs' failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_malformed_param_capture_disables_inspection_when_unbound(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    class Exploding(dict[str, Any]):
+        def items(self) -> Any:
+            raise RuntimeError("parameters were inspected")
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture=["nope"]),  # type: ignore[arg-type]
+    )
+
+    result = await wrapped(Exploding(q="hi"))
+
+    assert result == OK
+    assert mock.events == []
+    assert any("is disabled for this tool" in record.getMessage() for record in caplog.records)

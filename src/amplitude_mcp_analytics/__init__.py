@@ -9,11 +9,14 @@ from importlib.metadata import version as _version
 
 from .client import AmplitudeMCPAnalytics
 from .config import (
+    DEFAULT_PARAM_NEVER_KEYS,
     AutocaptureConfig,
     ErrorMessageSanitizer,
     MCPAnalyticsConfig,
+    ParamCaptureConfig,
     RationaleSanitizer,
     ResolvedAutocapture,
+    ResolvedParamCapture,
 )
 from .context import (
     AnchorType,
@@ -33,6 +36,7 @@ from .context import (
     McpTransport,
     ResolveClientInfoInput,
     SetIdentityInput,
+    ToolParamCapture,
     create_server_context,
     create_tool_context,
     get_current_context,
@@ -80,6 +84,7 @@ __all__ = [
     "AnchorType",
     "ClientInfoResolver",
     "AutocaptureConfig",
+    "DEFAULT_PARAM_NEVER_KEYS",
     "DefaultServerFields",
     "DefaultToolFields",
     "ErrorMessageSanitizer",
@@ -100,10 +105,13 @@ __all__ = [
     "McpToolMeta",
     "McpTransport",
     "MockAmplitudeMCPAnalytics",
+    "ParamCaptureConfig",
     "RationaleSanitizer",
     "ResolvedAutocapture",
+    "ResolvedParamCapture",
     "ResolveClientInfoInput",
     "SetIdentityInput",
+    "ToolParamCapture",
     "TrackEventOptions",
     "__version__",
     "build_tool_error",
