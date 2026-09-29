@@ -205,6 +205,38 @@ class TestTier1Shape:
             for value in (email, uuid, text):
                 assert value not in output
 
+    def test_string_buckets_use_utf16_code_units(self) -> None:
+        # 31 BMP characters plus one emoji is 32 code points (Python len) but
+        # 33 UTF-16 code units (JavaScript length).
+        emoji = "a" * 31 + "👍"
+        assert len(emoji) == 32
+        result = capture({"q": emoji})
+        assert result.tier1["[MCP] Param Shape"] == "q:str[33-256]"
+
+        capped = "a" * 255 + "👍"
+        assert len(capped) == 256
+        dropped = capture(
+            {},
+            policy=ResolvedToolParamCapture(derive=lambda _params: {"note": capped}),
+        )
+        assert dropped.tier2 == {}
+
+    def test_unwraps_enum_members_for_shape_and_route(self) -> None:
+        from enum import Enum
+
+        class Action(str, Enum):
+            LIST = "list"
+
+        class Color(Enum):
+            RED = "red"
+
+        result = capture(
+            {"action": Action.LIST, "color": Color.RED},
+            policy=ResolvedToolParamCapture(route_key="action"),
+        )
+        assert result.tier1["[MCP] Param Shape"] == "route=list;action:str[1-32];color:str[1-32]"
+        assert "Action.LIST" not in result.tier1["[MCP] Param Shape"]
+
     def test_counts_a_nested_pydantic_model_without_its_values(self) -> None:
         class Item(BaseModel):
             name: str
@@ -300,6 +332,16 @@ class TestDeclarationValidation:
         assert never.disabled is False
         assert never.policy is not None
         assert never.policy.never == ()
+
+    def test_ignores_an_async_derive(self) -> None:
+        async def derive(_params: dict[str, Any]) -> dict[str, int]:
+            return {"ok": 1}
+
+        result = resolve_tool_param_capture({"derive": derive})
+        assert result.disabled is False
+        assert result.policy is not None
+        assert result.policy.derive is None
+        assert any("synchronous" in warning for warning in result.warnings)
 
     def test_disables_capture_only_when_param_capture_is_not_an_object(self) -> None:
         assert resolve_tool_param_capture(["nope"]).disabled is True

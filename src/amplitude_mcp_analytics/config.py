@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
+from .utils.logger import get_logger
+
 __all__ = [
     "AutocaptureConfig",
     "DEFAULT_PARAM_NEVER_KEYS",
@@ -109,10 +111,22 @@ def _resolve_never_keys(value: Any) -> tuple[str, ...]:
     """``never_keys`` replaces the default only when it is a list or tuple.
 
     Non-strings inside that list are dropped. Anything else (including a bare
-    string, which would otherwise iterate as characters) keeps the default.
+    string, which would otherwise iterate as characters, or a set) keeps the
+    default and logs a warning — the same failure mode as a mistyped tool-level
+    ``never``.
     """
     if isinstance(value, (list, tuple)):
-        return tuple(key for key in value if isinstance(key, str))
+        kept = tuple(key for key in value if isinstance(key, str))
+        if len(kept) != len(value):
+            get_logger().warning(
+                "AmplitudeMCPAnalytics: non-string entries in param_capture.never_keys "
+                "were ignored."
+            )
+        return kept
+    get_logger().warning(
+        "AmplitudeMCPAnalytics: param_capture.never_keys must be a list of strings; "
+        "the default exclusion list was kept."
+    )
     return DEFAULT_PARAM_NEVER_KEYS
 
 

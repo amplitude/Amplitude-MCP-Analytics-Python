@@ -149,17 +149,52 @@ def _without_injected_context(params: Mapping[Any, Any]) -> dict[str, Any] | Non
     return kept
 
 
+def _without_signature_defaults(
+    handler: Callable[..., Any], params: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop keyword arguments that are the handler's own default object.
+
+    FastMCP calls the handler with every declared parameter filled in, so an
+    omitted ``limit: int | None = None`` arrives as ``None``. Identity (not
+    equality) keeps an explicitly sent value that happens to equal the default
+    when that value is a different object, and still drops the common case
+    where the framework reused the signature default. @internal
+    """
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return params
+    kept: dict[str, Any] = {}
+    for key, value in params.items():
+        parameter = signature.parameters.get(key)
+        if (
+            parameter is not None
+            and parameter.default is not inspect.Parameter.empty
+            and value is parameter.default
+        ):
+            continue
+        kept[key] = value
+    return kept
+
+
 def _tool_params(
-    call_args: tuple[Any, ...], call_kwargs: Mapping[str, Any]
+    handler: Callable[..., Any],
+    call_args: tuple[Any, ...],
+    call_kwargs: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """The argument object capture reads.
 
     FastMCP calls tools with keyword arguments. A low-level handler receives
     the argument object as its first positional parameter. Same choice as
-    request-size measurement. @internal
+    request-size measurement. Signature defaults are stripped only on the
+    keyword path, because that is where FastMCP fills in parameters the client
+    did not send. @internal
     """
     if call_kwargs:
-        return _without_injected_context(call_kwargs)
+        params = _without_injected_context(call_kwargs)
+        if params is None:
+            return None
+        return _without_signature_defaults(handler, params)
     if call_args and isinstance(call_args[0], Mapping):
         return _without_injected_context(call_args[0])
     return None
@@ -306,7 +341,7 @@ def instrument_tool(
         param_properties: dict[str, Any] | None = None
         if not capture_resolution.disabled:
             try:
-                params = _tool_params(call_args, call_kwargs)
+                params = _tool_params(handler, call_args, call_kwargs)
                 if params is not None:
                     captured = capture_param_properties(
                         params,

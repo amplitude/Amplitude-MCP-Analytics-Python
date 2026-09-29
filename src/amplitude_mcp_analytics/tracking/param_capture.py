@@ -1,15 +1,17 @@
 """Content-free tool-parameter capture for ``[MCP] Tool Call Response``.
 
-Ported from Amplitude-MCP-Analytics-Node ``src/tracking/param-capture.ts``.
-Wire strings, caps, the SHA-256 fingerprint, and exclusion semantics match
-that module. Selecting the argument object (keyword arguments versus a
-positional mapping, and dropping an injected FastMCP ``Context``) is the
-caller's job. @internal
+Ported from Amplitude-MCP-Analytics-Node ``src/tracking/param-capture.ts``
+at commit ``d5c7eaf`` (v0.5.1). Wire strings, caps, the SHA-256 fingerprint,
+and exclusion semantics match that module. Selecting the argument object
+(keyword arguments versus a positional mapping, dropping an injected FastMCP
+``Context``, and dropping signature defaults) is the caller's job. @internal
 """
 
 from __future__ import annotations
 
+import enum
 import hashlib
+import inspect
 import logging
 import math
 import re
@@ -93,7 +95,11 @@ def resolve_tool_param_capture(value: Any) -> ToolParamCaptureResolution:
 
     if "derive" in value and value.get("derive") is not None:
         raw_derive = value.get("derive")
-        if callable(raw_derive) and not isinstance(raw_derive, type):
+        if inspect.iscoroutinefunction(raw_derive):
+            warnings.append(
+                "param_capture.derive must be a synchronous function; it was ignored"
+            )
+        elif callable(raw_derive) and not isinstance(raw_derive, type):
             derive = cast(ParamDerive, raw_derive)
         else:
             warnings.append("param_capture.derive must be a function; it was ignored")
@@ -181,7 +187,29 @@ class _Undefined:
 _undefined = _Undefined()
 
 
+def _unwrap_enum(value: Any) -> Any:
+    """Enum members are captured as their value.
+
+    A ``str`` mixin otherwise validates as ``\"list\"`` and then formats as
+    ``Action.LIST`` on Python 3.11+. A plain ``Enum`` otherwise falls through
+    to ``__dict__``, whose size changes between Python versions. @internal
+    """
+    if isinstance(value, enum.Enum):
+        return value.value
+    return value
+
+
+def _js_length(value: str) -> int:
+    """UTF-16 code units, matching JavaScript ``String.prototype.length``.
+
+    Python ``len`` counts code points, so an emoji near a bucket boundary
+    would put the two SDKs in different shape buckets. @internal
+    """
+    return len(value.encode("utf-16-le")) // 2
+
+
 def _is_safe_route_value(value: Any) -> bool:
+    value = _unwrap_enum(value)
     if isinstance(value, bool):
         return True
     if isinstance(value, int):
@@ -191,7 +219,8 @@ def _is_safe_route_value(value: Any) -> bool:
     return isinstance(value, str) and _SAFE_IDENTIFIER.fullmatch(value) is not None
 
 
-def _format_route_value(value: bool | int | float | str) -> str:
+def _format_route_value(value: Any) -> str:
+    value = _unwrap_enum(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float) and value.is_integer():
@@ -200,6 +229,7 @@ def _format_route_value(value: bool | int | float | str) -> str:
 
 
 def _shape_of(value: Any) -> str:
+    value = _unwrap_enum(value)
     if value is None:
         return "null"
     if isinstance(value, bool):
@@ -207,7 +237,7 @@ def _shape_of(value: Any) -> str:
     if isinstance(value, (int, float)):
         return "num"
     if isinstance(value, str):
-        length = len(value)
+        length = _js_length(value)
         if length == 0:
             return "str[0]"
         if length <= 32:
@@ -270,7 +300,7 @@ def _derive_metadata_properties(
             break
         if key in excluded or _SAFE_IDENTIFIER.fullmatch(key) is None:
             continue
-        value = values[key]
+        value = _unwrap_enum(values[key])
         if not _is_safe_derived_value(value):
             continue
         properties[f"[MCP] Param: {key}"] = value
@@ -286,6 +316,6 @@ def _is_safe_derived_value(value: Any) -> bool:
         return math.isfinite(value)
     return (
         isinstance(value, str)
-        and len(value) <= _DERIVED_VALUE_MAX
+        and _js_length(value) <= _DERIVED_VALUE_MAX
         and _UNSAFE_DERIVED_TEXT.search(value) is None
     )

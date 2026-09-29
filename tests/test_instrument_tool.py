@@ -14,11 +14,14 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+from enum import Enum
 from typing import Any
 
 import anyio
 import pytest
-from mcp.types import CallToolResult, TextContent
+from mcp.server.fastmcp import FastMCP
+from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import CallToolResult, Implementation, TextContent
 
 from amplitude_mcp_analytics import (
     AmplitudeMCPAnalytics,
@@ -34,6 +37,14 @@ from conftest import server_ctx, tenant
 RESPONSE = "[MCP] Tool Call Response"
 
 OK = {"content": [{"type": "text", "text": "ok"}]}
+
+
+class _Action(str, Enum):
+    LIST = "list"
+
+
+class _Color(Enum):
+    RED = "red"
 
 
 def make_mock(config: MCPAnalyticsConfig | None = None) -> MockAmplitudeMCPAnalytics:
@@ -635,9 +646,6 @@ async def test_drops_an_injected_fastmcp_context_from_parameter_capture() -> Non
     assert props["[MCP] Param Keys"] == ["q"]
     assert props["[MCP] Param Shape"] == "q:str[1-32]"
     assert "secret-token-value" not in json.dumps(props)
-    # The Context is still part of the call the size measurement sees, and it
-    # has no JSON form, so the size stays absent.
-    assert "[MCP] Request Size" not in props
 
 
 @pytest.mark.anyio
@@ -794,3 +802,62 @@ async def test_malformed_param_capture_disables_inspection_when_unbound(
     assert result == OK
     assert mock.events == []
     assert any("is disabled for this tool" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_omits_signature_defaults_the_caller_filled_in() -> None:
+    # FastMCP passes every declared parameter. A value that is the signature
+    # default object is treated as not supplied.
+    mock = make_mock()
+
+    async def search(query: str, limit: int | None = None, page: int = 1) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(search, name="search")
+    bind(mock)
+
+    await wrapped(query="hi", limit=None, page=1)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["query"]
+    assert props["[MCP] Param Count"] == 1
+    assert props["[MCP] Param Shape"] == "query:str[1-32]"
+
+    await wrapped(query="hi", limit=5, page=2)
+    supplied = mock.get_events(RESPONSE)[1]["event_properties"]
+    assert supplied["[MCP] Param Keys"] == ["limit", "page", "query"]
+    assert supplied["[MCP] Param Shape"] == "limit:num;page:num;query:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_fastmcp_call_tool_reports_only_arguments_the_client_sent() -> None:
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @mcp.tool()
+    @analytics.instrument_tool(
+        name="search",
+        param_capture={"route_key": "action"},
+    )
+    async def search(
+        query: str,
+        action: _Action,
+        limit: int | None = None,
+        page: int = 1,
+        color: _Color = _Color.RED,
+    ) -> str:
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("search", {"query": "hi", "action": "list"})
+
+    assert result.isError is False
+    props = analytics.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["action", "query"]
+    assert props["[MCP] Param Count"] == 2
+    assert props["[MCP] Param Shape"] == "route=list;action:str[1-32];query:str[1-32]"
+    assert "Action.LIST" not in props["[MCP] Param Shape"]

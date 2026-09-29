@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from amplitude_mcp_analytics.config import MCPAnalyticsConfig, ResolvedAutocapture
 
 ALL_ON = ResolvedAutocapture(
@@ -76,6 +78,18 @@ class TestParamCapture:
         ).param_capture
         assert resolved.shape is False
         assert resolved.never_keys == ("private",)
+
+    def test_warns_when_never_keys_is_not_a_list(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from amplitude_mcp_analytics import DEFAULT_PARAM_NEVER_KEYS
+
+        caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+        resolved = MCPAnalyticsConfig(
+            param_capture={"never_keys": {"private"}}  # type: ignore[typeddict-item]
+        ).param_capture
+        assert resolved.never_keys == DEFAULT_PARAM_NEVER_KEYS
+        assert "must be a list of strings" in caplog.records[0].getMessage()
 
     def test_allows_an_empty_exclusion_list_and_drops_invalid_entries(self) -> None:
         assert MCPAnalyticsConfig(param_capture={"never_keys": []}).param_capture.never_keys == ()
