@@ -35,11 +35,11 @@ import functools
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import ErrorMessageSanitizer
+from ..config import DEFAULT_PARAM_NEVER_KEYS, ErrorMessageSanitizer
 from ..context.types import (
     ClientInfoResolver,
     IdentityResolver,
@@ -56,6 +56,11 @@ from ..errors import build_tool_error, classify_error, error_message_from_result
 from ..types import AmplitudeClientLike
 from ..utils.logger import get_logger
 from .events import emit_tool_call_response
+from .param_capture import (
+    ResolvedToolParamCapture,
+    capture_param_properties,
+    resolve_tool_param_capture,
+)
 
 __all__ = ["InstrumentToolDependencies", "instrument_tool"]
 
@@ -101,7 +106,120 @@ class InstrumentToolDependencies:
     sanitize_error_message: ErrorMessageSanitizer | None = None
     """Rewrites/drops ``[MCP] Error Message``, from ``config.sanitize_error_message``."""
 
+    capture_param_shape: bool = True
+    """Whether content-free parameter shape capture is enabled. From
+    ``config.param_capture.shape``."""
+
+    param_never_keys: tuple[str, ...] | None = None
+    """Global parameter keys excluded from capture. ``None`` uses
+    ``DEFAULT_PARAM_NEVER_KEYS``. An empty tuple excludes nothing."""
+
     logger: logging.Logger | None = None
+
+
+def _is_fastmcp_context(value: Any) -> bool:
+    """True for FastMCP's injected ``Context``.
+
+    That object is the Python stand-in for Node's trailing ``extra`` argument,
+    which is not a tool parameter. Matching the class name and module keeps
+    this check free of an import of ``mcp`` (the SDK duck-types that package).
+    @internal
+    """
+    cls = type(value)
+    module = cls.__module__
+    return cls.__name__ == "Context" and (
+        module == "mcp.server.fastmcp" or module.startswith("mcp.server.fastmcp.")
+    )
+
+
+def _without_injected_context(params: Mapping[Any, Any]) -> dict[str, Any] | None:
+    """Drop injected ``Context`` values. An argument object that contained only
+    those values is not a parameter payload, so capture is omitted. An empty
+    mapping is kept: it is a schema-taking call that supplied nothing."""
+    dropped_context = False
+    kept: dict[str, Any] = {}
+    for key, value in params.items():
+        if _is_fastmcp_context(value):
+            dropped_context = True
+            continue
+        if isinstance(key, str):
+            kept[key] = value
+    if not kept and dropped_context:
+        return None
+    return kept
+
+
+def _without_signature_defaults(
+    handler: Callable[..., Any], params: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop keyword arguments that are the handler's own default object.
+
+    FastMCP calls the handler with every declared parameter filled in, so an
+    omitted ``limit: int | None = None`` arrives as ``None``. Identity (not
+    equality) keeps an explicitly sent value that happens to equal the default
+    when that value is a different object, and still drops the common case
+    where the framework reused the signature default. @internal
+    """
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return params
+    kept: dict[str, Any] = {}
+    for key, value in params.items():
+        parameter = signature.parameters.get(key)
+        if (
+            parameter is not None
+            and parameter.default is not inspect.Parameter.empty
+            and value is parameter.default
+        ):
+            continue
+        kept[key] = value
+    return kept
+
+
+def _keep_supplied(
+    params: dict[str, Any],
+    handler: Callable[..., Any],
+    supplied_keys: frozenset[str] | None,
+) -> dict[str, Any]:
+    """``supplied_keys`` is the client's ``tools/call`` argument names.
+
+    A frozenset — including an empty one — is exact: keep only those names.
+    ``None`` means this invocation did not claim the request (a direct call,
+    or a nested instrumented function), so fall back to the signature-default
+    identity check. @internal
+    """
+    if supplied_keys is not None:
+        return {key: value for key, value in params.items() if key in supplied_keys}
+    return _without_signature_defaults(handler, params)
+
+
+def _tool_params(
+    handler: Callable[..., Any],
+    call_args: tuple[Any, ...],
+    call_kwargs: Mapping[str, Any],
+    supplied_keys: frozenset[str] | None,
+) -> dict[str, Any] | None:
+    """The argument object capture reads.
+
+    FastMCP calls tools with keyword arguments and fills every declared
+    parameter. A low-level ``call_tool`` handler is invoked as
+    ``func(tool_name, arguments)``, so the argument object is the first
+    positional mapping, not ``args[0]``. An injected FastMCP ``Context`` is
+    not a parameter. @internal
+    """
+    if call_kwargs:
+        params = _without_injected_context(call_kwargs)
+        if params is None:
+            return None
+        return _keep_supplied(params, handler, supplied_keys)
+    for arg in call_args:
+        if isinstance(arg, Mapping):
+            params = _without_injected_context(arg)
+            if params is None:
+                return None
+            return _keep_supplied(params, handler, supplied_keys)
+    return None
 
 
 def _is_async_callable(obj: Any) -> bool:
@@ -134,13 +252,37 @@ def instrument_tool(
     tools via ``AmplitudeMCPAnalytics.instrument_tool(handler, meta)``.
     """
     warned_unbound = False
+    capture_resolution = resolve_tool_param_capture(meta.param_capture)
+    logger = deps.logger if deps.logger is not None else get_logger()
+    never_keys = (
+        deps.param_never_keys
+        if deps.param_never_keys is not None
+        else DEFAULT_PARAM_NEVER_KEYS
+    )
+    capture: ResolvedToolParamCapture | None = (
+        None if capture_resolution.disabled else capture_resolution.policy
+    )
+    continuation = (
+        "is disabled for this tool"
+        if capture_resolution.disabled
+        else "will continue, ignoring the invalid fields"
+    )
+    for warning in capture_resolution.warnings:
+        logger.warning(
+            "AmplitudeMCPAnalytics: instrument_tool('%s') %s; parameter capture %s.",
+            meta.name,
+            warning,
+            continuation,
+        )
 
-    def _begin() -> tuple[McpToolContext | None, float]:
+    def _begin() -> tuple[McpToolContext | None, float, frozenset[str] | None]:
         nonlocal warned_unbound
         # This request reached a tool callback, so the `tools/call` rejection
         # hook must never emit for it — `[MCP] Tool Call Response` owns
-        # dispatched calls. Marked unconditionally, before any early return.
-        mark_tool_call_dispatched()
+        # dispatched calls. The first instrumented call in the frame also
+        # claims the argument names the client sent. Marked unconditionally,
+        # before any early return.
+        supplied_keys = mark_tool_call_dispatched()
 
         server_ctx = deps.get_server_ctx()
 
@@ -157,7 +299,7 @@ def instrument_tool(
                     "instrument_server(server) before running it to enable tracking.",
                     meta.name,
                 )
-            return None, 0.0
+            return None, 0.0, supplied_keys
 
         start = time.perf_counter()
         ctx = build_tool_context(
@@ -177,7 +319,7 @@ def instrument_tool(
             ),
             logger=deps.logger,
         )
-        return ctx, start
+        return ctx, start, supplied_keys
 
     def _record(
         ctx: McpToolContext,
@@ -188,6 +330,7 @@ def instrument_tool(
         thrown: Any = None,
         returned: Any = None,
         raised: bool,
+        supplied_keys: frozenset[str] | None = None,
     ) -> None:
         """The single point every tool call funnels through: resolve the call
         status, classify any error onto ``ctx.error``, then emit the default
@@ -220,6 +363,27 @@ def instrument_tool(
         elif call_args:
             request_payload = call_args[0]
 
+        param_properties: dict[str, Any] | None = None
+        if not capture_resolution.disabled:
+            try:
+                params = _tool_params(handler, call_args, call_kwargs, supplied_keys)
+                if params is not None:
+                    captured = capture_param_properties(
+                        params,
+                        shape=deps.capture_param_shape,
+                        never_keys=never_keys,
+                        policy=capture,
+                        logger=logger,
+                        tool_name=meta.name,
+                    )
+                    param_properties = {**captured.tier1, **captured.tier2}
+            except Exception:  # noqa: BLE001 — capture must not change the tool result
+                logger.debug(
+                    "AmplitudeMCPAnalytics: parameter capture for '%s' failed; "
+                    "parameter properties were omitted.",
+                    meta.name,
+                )
+
         # `payload_byte_size`, not plain `byte_size`: handler arguments and
         # returns are not always plain data. A low-level handler may return a
         # pydantic `CallToolResult` (the shape `is_error_result` already
@@ -234,6 +398,7 @@ def instrument_tool(
             duration_ms=duration_ms,
             request_size_bytes=payload_byte_size(request_payload),
             response_size_bytes=payload_byte_size(returned) if not raised else None,
+            param_properties=param_properties,
             sanitize=deps.sanitize_error_message,
         )
 
@@ -241,36 +406,48 @@ def instrument_tool(
 
         @functools.wraps(handler)
         async def async_wrapped(*call_args: Any, **call_kwargs: Any) -> Any:
-            ctx, start = _begin()
+            ctx, start, supplied_keys = _begin()
             if ctx is None:
                 return await handler(*call_args, **call_kwargs)
             token = _context_var.set(ctx)
             try:
                 result = await handler(*call_args, **call_kwargs)
             except BaseException as err:
-                _record(ctx, start, call_args, call_kwargs, thrown=err, raised=True)
+                _record(
+                    ctx, start, call_args, call_kwargs,
+                    thrown=err, raised=True, supplied_keys=supplied_keys,
+                )
                 raise
             finally:
                 _context_var.reset(token)
-            _record(ctx, start, call_args, call_kwargs, returned=result, raised=False)
+            _record(
+                ctx, start, call_args, call_kwargs,
+                returned=result, raised=False, supplied_keys=supplied_keys,
+            )
             return result
 
         return async_wrapped
 
     @functools.wraps(handler)
     def sync_wrapped(*call_args: Any, **call_kwargs: Any) -> Any:
-        ctx, start = _begin()
+        ctx, start, supplied_keys = _begin()
         if ctx is None:
             return handler(*call_args, **call_kwargs)
         token = _context_var.set(ctx)
         try:
             result = handler(*call_args, **call_kwargs)
         except BaseException as err:
-            _record(ctx, start, call_args, call_kwargs, thrown=err, raised=True)
+            _record(
+                ctx, start, call_args, call_kwargs,
+                thrown=err, raised=True, supplied_keys=supplied_keys,
+            )
             raise
         finally:
             _context_var.reset(token)
-        _record(ctx, start, call_args, call_kwargs, returned=result, raised=False)
+        _record(
+            ctx, start, call_args, call_kwargs,
+            returned=result, raised=False, supplied_keys=supplied_keys,
+        )
         return result
 
     return sync_wrapped

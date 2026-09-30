@@ -32,6 +32,7 @@ EXPECTED_EXPORTS = [
     "AmplitudeEvent",
     "AmplitudeFields",
     "AnchorType",
+    "DEFAULT_PARAM_NEVER_KEYS",
     "AutocaptureConfig",
     "ClientInfoResolver",
     "DefaultServerFields",
@@ -52,10 +53,13 @@ EXPECTED_EXPORTS = [
     "McpToolErrorType",
     "McpToolMeta",
     "McpTransport",
+    "ParamCaptureConfig",
     "RationaleSanitizer",
     "ResolvedAutocapture",
+    "ResolvedParamCapture",
     "ResolveClientInfoInput",
     "SetIdentityInput",
+    "ToolParamCapture",
     "TrackEventOptions",
 ]
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any
 
@@ -42,12 +42,17 @@ _WRAPPED_ATTR = "_amplitude_mcp_tool_call_wrapped"
 
 class DispatchMarker:
     """Mutable per-``tools/call`` flag: did the request reach an
-    ``instrument_tool``-wrapped callback? @internal"""
+    ``instrument_tool``-wrapped callback, and which argument names did the
+    client send? @internal"""
 
-    __slots__ = ("dispatched",)
+    __slots__ = ("dispatched", "supplied_claimed", "supplied_keys")
 
-    def __init__(self) -> None:
+    def __init__(self, supplied_keys: frozenset[str] = frozenset()) -> None:
         self.dispatched = False
+        self.supplied_claimed = False
+        #: Argument names on this ``tools/call`` request. Empty when the client
+        #: sent none. Not ``None``: ``None`` is reserved for "no frame".
+        self.supplied_keys = supplied_keys
 
 
 _dispatch_marker: ContextVar[DispatchMarker | None] = ContextVar(
@@ -55,12 +60,32 @@ _dispatch_marker: ContextVar[DispatchMarker | None] = ContextVar(
 )
 
 
-def mark_tool_call_dispatched() -> None:
+def mark_tool_call_dispatched() -> frozenset[str] | None:
     """Record that the current ``tools/call`` request reached a tool callback.
-    No-op outside an instrumented ``tools/call`` frame. @internal"""
+
+    The first call in the frame also claims the argument names the client
+    sent (an empty set when the client sent none). Later calls in the same
+    frame — an instrumented function invoked directly by that tool — get
+    ``None`` and must not reuse the outer tool's names. Outside a frame this
+    returns ``None`` and still does not raise. @internal"""
     marker = _dispatch_marker.get()
-    if marker is not None:
-        marker.dispatched = True
+    if marker is None:
+        return None
+    marker.dispatched = True
+    if marker.supplied_claimed:
+        return None
+    marker.supplied_claimed = True
+    return marker.supplied_keys
+
+
+def _argument_names(req: Any) -> frozenset[str]:
+    """String keys of ``req.params.arguments``. Missing or non-mapping
+    arguments are an empty set: this request sent no names. @internal"""
+    params = getattr(req, "params", None)
+    arguments = getattr(params, "arguments", None)
+    if not isinstance(arguments, Mapping):
+        return frozenset()
+    return frozenset(key for key in arguments if isinstance(key, str))
 
 
 def was_tool_call_dispatched(marker: DispatchMarker | None) -> bool:
@@ -99,7 +124,7 @@ def install_tool_call_hook(
         start = time.perf_counter()
         name = getattr(getattr(req, "params", None), "name", None)
         tool_name = name if isinstance(name, str) else None
-        marker = DispatchMarker()
+        marker = DispatchMarker(_argument_names(req))
         token = _dispatch_marker.set(marker)
 
         def report(*, result: Any = None, error: Any = None) -> None:

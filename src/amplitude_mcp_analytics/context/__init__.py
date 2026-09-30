@@ -19,6 +19,7 @@ from .types import (
     McpTransport,
     ResolveClientInfoInput,
     SetIdentityInput,
+    ToolParamCapture,
 )
 from .vars import get_current_context, run_with_context, set_identity, set_rationale
 
@@ -38,6 +39,7 @@ __all__ = [
     "McpToolContext",
     "McpToolMeta",
     "McpTransport",
+    "ToolParamCapture",
     "ResolveClientInfoInput",
     "SetIdentityInput",
     "create_server_context",

@@ -367,6 +367,8 @@ class AmplitudeMCPAnalytics:
                 resolve_identity=resolve_identity,
                 track_tool_calls=self.config.autocapture.tool_calls,
                 sanitize_error_message=self.config.sanitize_error_message,
+                capture_param_shape=self.config.param_capture.shape,
+                param_never_keys=self.config.param_capture.never_keys,
                 logger=get_logger(),
             )
             return _instrument_tool_factory(deps, fn, resolved_meta)
@@ -387,18 +389,25 @@ class AmplitudeMCPAnalytics:
         if isinstance(meta, McpToolMeta):
             return meta
         if meta is not None:
-            fields = {k: v for k, v in meta.items() if k not in ("name", "owner", "extra")}
+            fields = {
+                k: v
+                for k, v in meta.items()
+                if k not in ("name", "owner", "extra", "param_capture")
+            }
             return McpToolMeta(
                 name=str(meta.get("name") or getattr(fn, "__name__", "unknown")),
                 owner=meta.get("owner"),
                 extra=meta.get("extra"),
+                param_capture=meta.get("param_capture"),
                 meta=fields,
             )
+        param_capture = meta_fields.get("param_capture")
         return McpToolMeta(
             name=name if name is not None else getattr(fn, "__name__", "unknown"),
             owner=owner,
             extra=extra,
-            meta=dict(meta_fields),
+            param_capture=param_capture,
+            meta={k: v for k, v in meta_fields.items() if k != "param_capture"},
         )
 
     def instrument_server(
