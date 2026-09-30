@@ -276,11 +276,12 @@ email used as a key) are omitted there but still counted in
 `[MCP] Param Count`. By default, `rationale` and `context` are also excluded
 because servers commonly use those names for content-bearing injected metadata.
 An injected FastMCP `Context` is not a parameter and is left out entirely.
-FastMCP calls the handler with every declared parameter filled in, so a
-keyword whose value is the signature's default object (an omitted
-`limit: int | None = None`, for example) is treated as not supplied. Enum
-members are captured as their value, so a `str` enum route is `route=list`
-rather than `route=Action.LIST`.
+On a `tools/call`, capture keeps the argument names the client sent. FastMCP
+still calls the handler with every declared parameter filled in; those
+filled-in values are not counted. A function you call directly, rather than
+through that request, falls back to dropping a keyword that is the signature's
+default object. Enum members are captured as their value, so a `str` enum
+route is `route=list` rather than `route=Action.LIST`.
 
 Multiplexed tools can include a safe route value in the shape (`route_key` is
 for small schema enums — string, finite number, or boolean — not `user_id`-

@@ -177,26 +177,48 @@ def _without_signature_defaults(
     return kept
 
 
+def _keep_supplied(
+    params: dict[str, Any],
+    handler: Callable[..., Any],
+    supplied_keys: frozenset[str] | None,
+) -> dict[str, Any]:
+    """``supplied_keys`` is the client's ``tools/call`` argument names.
+
+    A frozenset — including an empty one — is exact: keep only those names.
+    ``None`` means this invocation did not claim the request (a direct call,
+    or a nested instrumented function), so fall back to the signature-default
+    identity check. @internal
+    """
+    if supplied_keys is not None:
+        return {key: value for key, value in params.items() if key in supplied_keys}
+    return _without_signature_defaults(handler, params)
+
+
 def _tool_params(
     handler: Callable[..., Any],
     call_args: tuple[Any, ...],
     call_kwargs: Mapping[str, Any],
+    supplied_keys: frozenset[str] | None,
 ) -> dict[str, Any] | None:
     """The argument object capture reads.
 
-    FastMCP calls tools with keyword arguments. A low-level handler receives
-    the argument object as its first positional parameter. Same choice as
-    request-size measurement. Signature defaults are stripped only on the
-    keyword path, because that is where FastMCP fills in parameters the client
-    did not send. @internal
+    FastMCP calls tools with keyword arguments and fills every declared
+    parameter. A low-level ``call_tool`` handler is invoked as
+    ``func(tool_name, arguments)``, so the argument object is the first
+    positional mapping, not ``args[0]``. An injected FastMCP ``Context`` is
+    not a parameter. @internal
     """
     if call_kwargs:
         params = _without_injected_context(call_kwargs)
         if params is None:
             return None
-        return _without_signature_defaults(handler, params)
-    if call_args and isinstance(call_args[0], Mapping):
-        return _without_injected_context(call_args[0])
+        return _keep_supplied(params, handler, supplied_keys)
+    for arg in call_args:
+        if isinstance(arg, Mapping):
+            params = _without_injected_context(arg)
+            if params is None:
+                return None
+            return _keep_supplied(params, handler, supplied_keys)
     return None
 
 
@@ -253,12 +275,14 @@ def instrument_tool(
             continuation,
         )
 
-    def _begin() -> tuple[McpToolContext | None, float]:
+    def _begin() -> tuple[McpToolContext | None, float, frozenset[str] | None]:
         nonlocal warned_unbound
         # This request reached a tool callback, so the `tools/call` rejection
         # hook must never emit for it — `[MCP] Tool Call Response` owns
-        # dispatched calls. Marked unconditionally, before any early return.
-        mark_tool_call_dispatched()
+        # dispatched calls. The first instrumented call in the frame also
+        # claims the argument names the client sent. Marked unconditionally,
+        # before any early return.
+        supplied_keys = mark_tool_call_dispatched()
 
         server_ctx = deps.get_server_ctx()
 
@@ -275,7 +299,7 @@ def instrument_tool(
                     "instrument_server(server) before running it to enable tracking.",
                     meta.name,
                 )
-            return None, 0.0
+            return None, 0.0, supplied_keys
 
         start = time.perf_counter()
         ctx = build_tool_context(
@@ -295,7 +319,7 @@ def instrument_tool(
             ),
             logger=deps.logger,
         )
-        return ctx, start
+        return ctx, start, supplied_keys
 
     def _record(
         ctx: McpToolContext,
@@ -306,6 +330,7 @@ def instrument_tool(
         thrown: Any = None,
         returned: Any = None,
         raised: bool,
+        supplied_keys: frozenset[str] | None = None,
     ) -> None:
         """The single point every tool call funnels through: resolve the call
         status, classify any error onto ``ctx.error``, then emit the default
@@ -341,7 +366,7 @@ def instrument_tool(
         param_properties: dict[str, Any] | None = None
         if not capture_resolution.disabled:
             try:
-                params = _tool_params(handler, call_args, call_kwargs)
+                params = _tool_params(handler, call_args, call_kwargs, supplied_keys)
                 if params is not None:
                     captured = capture_param_properties(
                         params,
@@ -381,36 +406,48 @@ def instrument_tool(
 
         @functools.wraps(handler)
         async def async_wrapped(*call_args: Any, **call_kwargs: Any) -> Any:
-            ctx, start = _begin()
+            ctx, start, supplied_keys = _begin()
             if ctx is None:
                 return await handler(*call_args, **call_kwargs)
             token = _context_var.set(ctx)
             try:
                 result = await handler(*call_args, **call_kwargs)
             except BaseException as err:
-                _record(ctx, start, call_args, call_kwargs, thrown=err, raised=True)
+                _record(
+                    ctx, start, call_args, call_kwargs,
+                    thrown=err, raised=True, supplied_keys=supplied_keys,
+                )
                 raise
             finally:
                 _context_var.reset(token)
-            _record(ctx, start, call_args, call_kwargs, returned=result, raised=False)
+            _record(
+                ctx, start, call_args, call_kwargs,
+                returned=result, raised=False, supplied_keys=supplied_keys,
+            )
             return result
 
         return async_wrapped
 
     @functools.wraps(handler)
     def sync_wrapped(*call_args: Any, **call_kwargs: Any) -> Any:
-        ctx, start = _begin()
+        ctx, start, supplied_keys = _begin()
         if ctx is None:
             return handler(*call_args, **call_kwargs)
         token = _context_var.set(ctx)
         try:
             result = handler(*call_args, **call_kwargs)
         except BaseException as err:
-            _record(ctx, start, call_args, call_kwargs, thrown=err, raised=True)
+            _record(
+                ctx, start, call_args, call_kwargs,
+                thrown=err, raised=True, supplied_keys=supplied_keys,
+            )
             raise
         finally:
             _context_var.reset(token)
-        _record(ctx, start, call_args, call_kwargs, returned=result, raised=False)
+        _record(
+            ctx, start, call_args, call_kwargs,
+            returned=result, raised=False, supplied_keys=supplied_keys,
+        )
         return result
 
     return sync_wrapped

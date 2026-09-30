@@ -309,12 +309,14 @@ handler may enrich `ctx.tool.extra` mid-call and the values land on this event.
 
 ### Parameter capture
 
-Shape capture is on by default. It reads the handler's arguments: keyword
-arguments for a FastMCP tool (an injected `Context` is dropped; it is not a
-parameter), or the first positional mapping for a low-level handler. FastMCP
-fills in every declared parameter, so a keyword that is the signature's
-default object is treated as not supplied. Enum members are recorded as their
-value. String lengths are UTF-16 code units, matching JavaScript. Parameter
+Shape capture is on by default. On a `tools/call` it keeps the argument names
+the client sent. FastMCP still invokes the handler with every declared
+parameter filled in, and an injected `Context` is dropped; neither is counted.
+A low-level handler is called as `func(name, arguments)`, so capture uses the
+first positional mapping. A direct call, with no `tools/call` frame, falls
+back to dropping a keyword that is the signature's default object. Enum
+members are recorded as their value. String lengths are UTF-16 code units,
+matching JavaScript. Parameter
 values are represented only by types, collection counts, and bucketed string
 lengths; nested content is never walked. A pydantic model nested in those
 arguments counts as `obj[n]` using its field count, without its values.
