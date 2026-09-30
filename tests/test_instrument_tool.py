@@ -14,7 +14,6 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-from enum import Enum
 from typing import Any
 
 import anyio
@@ -37,14 +36,6 @@ from conftest import server_ctx, tenant
 RESPONSE = "[MCP] Tool Call Response"
 
 OK = {"content": [{"type": "text", "text": "ok"}]}
-
-
-class _Action(str, Enum):
-    LIST = "list"
-
-
-class _Color(Enum):
-    RED = "red"
 
 
 def make_mock(config: MCPAnalyticsConfig | None = None) -> MockAmplitudeMCPAnalytics:
@@ -831,21 +822,15 @@ async def test_omits_signature_defaults_the_caller_filled_in() -> None:
 
 @pytest.mark.anyio
 async def test_fastmcp_call_tool_reports_only_arguments_the_client_sent() -> None:
+    # Builtin annotations only. mcp 1.16 evaluates postponed annotations against
+    # the wrapper's globals, so a type defined in this module (an Enum) cannot
+    # be resolved there. Enum unwrapping is covered in test_param_capture.
     analytics = make_mock()
     mcp = FastMCP("test-mcp")
 
     @mcp.tool()
-    @analytics.instrument_tool(
-        name="search",
-        param_capture={"route_key": "action"},
-    )
-    async def search(
-        query: str,
-        action: _Action,
-        limit: int | None = None,
-        page: int = 1,
-        color: _Color = _Color.RED,
-    ) -> str:
+    @analytics.instrument_tool(name="search")
+    async def search(query: str, limit: int | None = None, page: int = 1) -> str:
         return "ok"
 
     analytics.instrument_server(mcp, user_id="user-1")
@@ -853,11 +838,10 @@ async def test_fastmcp_call_tool_reports_only_arguments_the_client_sent() -> Non
     async with create_connected_server_and_client_session(
         mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
     ) as client:
-        result = await client.call_tool("search", {"query": "hi", "action": "list"})
+        result = await client.call_tool("search", {"query": "hi"})
 
     assert result.isError is False
     props = analytics.get_events(RESPONSE)[0]["event_properties"]
-    assert props["[MCP] Param Keys"] == ["action", "query"]
-    assert props["[MCP] Param Count"] == 2
-    assert props["[MCP] Param Shape"] == "route=list;action:str[1-32];query:str[1-32]"
-    assert "Action.LIST" not in props["[MCP] Param Shape"]
+    assert props["[MCP] Param Keys"] == ["query"]
+    assert props["[MCP] Param Count"] == 1
+    assert props["[MCP] Param Shape"] == "query:str[1-32]"
