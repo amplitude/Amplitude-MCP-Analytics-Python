@@ -184,12 +184,16 @@ def _keep_supplied(
 ) -> dict[str, Any]:
     """``supplied_keys`` is the client's ``tools/call`` argument names.
 
-    A frozenset — including an empty one — is exact: keep only those names.
-    ``None`` means this invocation did not claim the request (a direct call,
-    or a nested instrumented function), so fall back to the signature-default
-    identity check. @internal
+    A frozenset — including an empty one — is exact when this call looks like
+    the request's tool: empty arguments, or at least one overlapping name.
+    A non-empty set that shares no names with ``params`` means an instrumented
+    helper claimed an uninstrumented outer tool's request, so fall back to the
+    signature-default identity check. ``None`` is the same fallback (a direct
+    call, or a nested instrumented function that did not claim). @internal
     """
-    if supplied_keys is not None:
+    if supplied_keys is not None and (
+        not supplied_keys or supplied_keys.intersection(params)
+    ):
         return {key: value for key, value in params.items() if key in supplied_keys}
     return _without_signature_defaults(handler, params)
 

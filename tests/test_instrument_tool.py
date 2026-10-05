@@ -952,6 +952,37 @@ async def test_nested_instrumented_call_does_not_reuse_the_outer_argument_names(
 
 
 @pytest.mark.anyio
+async def test_instrumented_helper_inside_uninstrumented_tool_falls_back() -> None:
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @analytics.instrument_tool(name="helper")
+    async def helper(detail: str, limit: int) -> str:
+        return detail
+
+    @mcp.tool()
+    async def plain_tool(query: str) -> str:
+        await helper(detail="x", limit=5)
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("plain_tool", {"query": "hi"})
+
+    assert result.isError is False
+    props = _props(analytics)
+    assert props["[MCP] Tool Name"] == "helper"
+    # The helper claimed the outer request, but `query` does not overlap its
+    # kwargs, so capture falls back to the identity check instead of emitting
+    # an empty Param Keys / Param Count 0.
+    assert props["[MCP] Param Keys"] == ["detail", "limit"]
+    assert props["[MCP] Param Count"] == 2
+    assert props["[MCP] Param Shape"] == "detail:str[1-32];limit:num"
+
+
+@pytest.mark.anyio
 async def test_low_level_call_tool_captures_the_arguments_mapping() -> None:
     analytics = make_mock()
     server = Server("low-level")
