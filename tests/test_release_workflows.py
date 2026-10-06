@@ -159,6 +159,18 @@ class TestWorkflowShape:
             "cancel-in-progress": False,
         }
 
+    def test_permissions_are_scoped_to_each_job(self) -> None:
+        assert workflow()["permissions"] == {}
+        assert jobs()["release-please"]["permissions"] == {
+            "contents": "write",
+            "pull-requests": "write",
+            "issues": "write",
+        }
+        assert jobs()["publish"]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+
 
 class TestActionsArePinned:
     def test_every_action_is_sha_pinned(self) -> None:
@@ -287,7 +299,7 @@ class TestReleasePRLockfile:
 class TestTrustedPublishing:
     def test_id_token_write_is_granted(self) -> None:
         # Without it uv has no OIDC token to exchange and the upload fails.
-        assert workflow()["permissions"]["id-token"] == "write"
+        assert jobs()["publish"]["permissions"]["id-token"] == "write"
 
     def test_publish_forces_trusted_publishing(self) -> None:
         # `always`, not the default `automatic`: no silent fallback to an

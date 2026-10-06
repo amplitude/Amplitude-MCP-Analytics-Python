@@ -46,13 +46,7 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  # OIDC token for PyPI Trusted Publishing (`uv publish`). Declared at the
-  # workflow level because that is the scope uv's token exchange reads.
-  id-token: write
+permissions: {}
 
 # The job updates release-please's shared PR branch after creating it. Serialize
 # pushes to main so two runs cannot race while regenerating and pushing uv.lock.
@@ -63,6 +57,10 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     # AMPLITUDE_DEV_EXP_* live on the pypi-release environment (mirroring
     # developer-cli's npm-release), not repo/org secrets.
     environment: pypi-release
@@ -127,6 +125,10 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # OIDC token for PyPI Trusted Publishing (`uv publish`).
+      id-token: write
     needs: release-please
     # Automatic uploads require release-please's trusted output. Maintainers
     # can also retry an interrupted upload by explicitly dispatching a tag;
