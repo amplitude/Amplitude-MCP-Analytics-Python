@@ -12,6 +12,13 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.4.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.3.0...v0.4.0) (2026-10-06)
+
+
+### Features
+
+* add tiered tool parameter capture ([#12](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/12)) ([155ab37](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/155ab3724a654c031c1dc9ffb5c46dc2e6afd2f6))
+
 ## [0.3.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.2.0...v0.3.0) (2026-09-17)
 
 
