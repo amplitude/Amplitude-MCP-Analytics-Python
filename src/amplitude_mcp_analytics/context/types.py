@@ -10,9 +10,9 @@ breaking change; other fields may still evolve before they are promoted.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from ..errors import McpToolError
 
@@ -32,6 +32,7 @@ __all__ = [
     "McpToolContext",
     "McpToolMeta",
     "McpTransport",
+    "ToolParamCapture",
     "ResolveClientInfoInput",
     "SetIdentityInput",
 ]
@@ -176,6 +177,28 @@ class McpServerContext:
     pass-through. Internal."""
 
 
+class ToolParamCapture(TypedDict, total=False):
+    """Parameter-capture policy for one instrumented tool.
+
+    Shape capture is controlled globally by ``MCPAnalyticsConfig``. This policy
+    adds tool-specific exclusions, route discrimination, and derived facts.
+    Absent means automatic shape capture only.
+
+    - ``route_key``: parameter whose value distinguishes multiplexed routes of
+      one tool. Intended for small schema enums (string, finite number, or
+      boolean) — not high-cardinality ids such as ``user_id``.
+    - ``derive``: project parameters into bounded, chartable scalar facts,
+      emitted as ``[MCP] Param: <key>``.
+    - ``never``: keys excluded from capture for this tool — both input keys on
+      the shape/keys list and derived fact names. Unioned with the global
+      ``never_keys`` list.
+    """
+
+    route_key: str
+    derive: Callable[[Mapping[str, Any]], Mapping[str, str | int | float | bool]]
+    never: Sequence[str]
+
+
 @dataclass
 class McpToolMeta:
     """Tool metadata the caller attaches when instrumenting a tool."""
@@ -188,6 +211,9 @@ class McpToolMeta:
     Response`` event (the event's SDK-computed outcome values win on collision;
     avoid ``[MCP] ``-prefixed keys, which are reserved for SDK-derived
     properties)."""
+    param_capture: ToolParamCapture | None = None
+    """Parameter-capture policy for this tool. Absent means automatic shape
+    capture only."""
     meta: dict[str, Any] = field(default_factory=dict)
     """Free-form metadata; forward-compatible and the home for server-specific
     fields with no dedicated top-level slot. ``tags`` (list of str) and

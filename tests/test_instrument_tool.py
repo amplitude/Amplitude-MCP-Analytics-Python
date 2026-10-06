@@ -18,7 +18,11 @@ from typing import Any
 
 import anyio
 import pytest
-from mcp.types import CallToolResult, TextContent
+from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import Server
+from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import CallToolResult, Implementation, TextContent, Tool
+from pydantic import Field
 
 from amplitude_mcp_analytics import (
     AmplitudeMCPAnalytics,
@@ -576,3 +580,461 @@ async def test_tool_error_inside_the_handler_preserves_the_ctx_error_code() -> N
     assert props["[MCP] Error Code"] == "missing_chart_id"  # host code preserved
     assert props["[MCP] Error Type"] == "returned_error"
     assert props["[MCP] Error Message"] == "No chart ID was provided."
+
+
+def _fastmcp_context() -> Any:
+    """Stand-in for ``mcp.server.fastmcp.server.Context``. The wrapper identifies
+    it by class name and module, so the test does not construct a live session."""
+
+    class Context:
+        __module__ = "mcp.server.fastmcp.server"
+
+        def __init__(self) -> None:
+            self.session_token = "secret-token-value"
+
+    return Context()
+
+
+@pytest.mark.anyio
+async def test_captures_shape_and_derived_metadata_for_a_kwargs_handler() -> None:
+    mock = make_mock()
+
+    async def handler(q: str, limit: int) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        name="search_docs",
+        param_capture={
+            "derive": lambda params: {"hasLimit": isinstance(params.get("limit"), int)}
+        },
+    )
+    bind(mock)
+
+    await wrapped(q="private search", limit=10)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["limit", "q"]
+    assert props["[MCP] Param Count"] == 2
+    assert props["[MCP] Param Shape"] == "limit:num;q:str[1-32]"
+    assert len(props["[MCP] Param Fingerprint"]) == 12
+    assert props["[MCP] Param: hasLimit"] is True
+    assert "private search" not in json.dumps(props)
+
+
+@pytest.mark.anyio
+async def test_drops_an_injected_fastmcp_context_from_parameter_capture() -> None:
+    mock = make_mock()
+
+    async def handler(q: str, ctx: Any) -> dict[str, Any]:
+        assert ctx.session_token == "secret-token-value"
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    await wrapped(q="hi", ctx=_fastmcp_context())
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["q"]
+    assert props["[MCP] Param Shape"] == "q:str[1-32]"
+    assert "secret-token-value" not in json.dumps(props)
+
+
+@pytest.mark.anyio
+async def test_omits_parameter_properties_when_the_only_argument_is_context() -> None:
+    mock = make_mock()
+
+    async def handler(ctx: Any) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="no_args")
+    bind(mock)
+
+    await wrapped(ctx=_fastmcp_context())
+
+    assert "[MCP] Param Shape" not in mock.get_events(RESPONSE)[0]["event_properties"]
+
+
+@pytest.mark.anyio
+async def test_can_disable_shape_capture_while_retaining_an_opted_in_derive() -> None:
+    mock = make_mock(MCPAnalyticsConfig(param_capture={"shape": False}))
+
+    async def handler(limit: int) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture={"derive": lambda _params: {"range": 30}}),
+    )
+    bind(mock)
+
+    await wrapped(limit=10)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert "[MCP] Param Shape" not in props
+    assert props["[MCP] Param: range"] == 30
+
+
+@pytest.mark.anyio
+async def test_omits_parameter_properties_for_handlers_without_arguments() -> None:
+    mock = make_mock()
+
+    async def handler() -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="no_args")
+    bind(mock)
+
+    await wrapped()
+
+    assert "[MCP] Param Shape" not in mock.get_events(RESPONSE)[0]["event_properties"]
+
+
+def test_captures_shape_when_a_handler_raises() -> None:
+    mock = make_mock()
+
+    def handler(q: str) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        wrapped(q="private")
+
+    assert mock.get_events(RESPONSE)[0]["event_properties"]["[MCP] Param Shape"] == "q:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_captures_shape_for_an_in_band_error_result() -> None:
+    mock = make_mock()
+
+    async def handler(limit: int) -> dict[str, Any]:
+        return {"isError": True, "content": [{"type": "text", "text": "failed"}]}
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    await wrapped(limit=500)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Is Error"] is True
+    assert props["[MCP] Param Shape"] == "limit:num"
+
+
+@pytest.mark.anyio
+async def test_warns_on_a_mistyped_route_key_but_still_emits_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    async def handler(q: str) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture={"route_key": 42}),  # type: ignore[typeddict-item]
+    )
+    bind(mock)
+
+    await wrapped(q="private")
+
+    assert len(caplog.records) == 1
+    assert "invalid fields" in caplog.records[0].getMessage()
+    assert mock.get_events(RESPONSE)[0]["event_properties"]["[MCP] Param Shape"] == "q:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_a_capture_failure_does_not_change_the_tool_result(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    class Exploding(dict[str, Any]):
+        def items(self) -> Any:
+            raise TypeError("parameters were inspected")
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(handler, name="search_docs")
+    bind(mock)
+
+    result = await wrapped(Exploding(q="hi"))
+
+    assert result == OK
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert "[MCP] Param Shape" not in props
+    assert any("parameter capture for 'search_docs' failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_malformed_param_capture_disables_inspection_when_unbound(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
+    mock = make_mock()
+
+    class Exploding(dict[str, Any]):
+        def items(self) -> Any:
+            raise RuntimeError("parameters were inspected")
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(
+        handler,
+        McpToolMeta(name="search_docs", param_capture=["nope"]),  # type: ignore[arg-type]
+    )
+
+    result = await wrapped(Exploding(q="hi"))
+
+    assert result == OK
+    assert mock.events == []
+    assert any("is disabled for this tool" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_omits_signature_defaults_the_caller_filled_in() -> None:
+    # FastMCP passes every declared parameter. A value that is the signature
+    # default object is treated as not supplied.
+    mock = make_mock()
+
+    async def search(query: str, limit: int | None = None, page: int = 1) -> dict[str, Any]:
+        return OK
+
+    wrapped = mock.instrument_tool(search, name="search")
+    bind(mock)
+
+    await wrapped(query="hi", limit=None, page=1)
+
+    props = mock.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["query"]
+    assert props["[MCP] Param Count"] == 1
+    assert props["[MCP] Param Shape"] == "query:str[1-32]"
+
+    await wrapped(query="hi", limit=5, page=2)
+    supplied = mock.get_events(RESPONSE)[1]["event_properties"]
+    assert supplied["[MCP] Param Keys"] == ["limit", "page", "query"]
+    assert supplied["[MCP] Param Shape"] == "limit:num;page:num;query:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_fastmcp_call_tool_reports_only_arguments_the_client_sent() -> None:
+    # Builtin annotations only, so the tool schema builds on mcp 1.16 as well
+    # as current mcp. Enum unwrapping is covered in test_param_capture.
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="search")
+    async def search(query: str, limit: int | None = None, page: int = 1) -> str:
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("search", {"query": "hi"})
+
+    assert result.isError is False
+    props = analytics.get_events(RESPONSE)[0]["event_properties"]
+    assert props["[MCP] Param Keys"] == ["query"]
+    assert props["[MCP] Param Count"] == 1
+    assert props["[MCP] Param Shape"] == "query:str[1-32]"
+
+
+def _props(analytics: MockAmplitudeMCPAnalytics, index: int = -1) -> dict[str, Any]:
+    return analytics.get_events(RESPONSE)[index]["event_properties"]
+
+
+@pytest.mark.anyio
+async def test_call_tool_ignores_filled_defaults_and_keeps_explicit_values() -> None:
+    # Explicit False / "asc" would be dropped by the identity fallback, so
+    # their presence shows the tools/call names were used.
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="search")
+    async def search(
+        query: str,
+        limit: int = Field(10, description="cap"),
+        tags: list[str] = [],  # noqa: B006 — pydantic copies this default
+        opts: dict[str, str] = {},  # noqa: B006 — pydantic copies this default
+        order: str = "asc",
+        flag: bool = False,
+    ) -> str:
+        return "ok"
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="optional")
+    async def optional(query: str, limit: int | None = None) -> str:
+        return "ok"
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="ping")
+    async def ping(limit: int = Field(10)) -> str:
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        omitted = await client.call_tool("search", {"query": "hi"})
+        explicit = await client.call_tool(
+            "search", {"query": "hi", "order": "asc", "flag": False}
+        )
+        nulled = await client.call_tool("optional", {"query": "hi", "limit": None})
+        empty = await client.call_tool("ping", {})
+
+    assert omitted.isError is False
+    omitted_props = _props(analytics, 0)
+    assert omitted_props["[MCP] Param Keys"] == ["query"]
+    assert omitted_props["[MCP] Param Count"] == 1
+    assert "limit" not in omitted_props["[MCP] Param Shape"]
+    assert "tags" not in omitted_props["[MCP] Param Shape"]
+    assert "opts" not in omitted_props["[MCP] Param Shape"]
+
+    explicit_props = _props(analytics, 1)
+    assert explicit.isError is False
+    assert explicit_props["[MCP] Param Keys"] == ["flag", "order", "query"]
+    assert explicit_props["[MCP] Param Shape"] == "flag:bool;order:str[1-32];query:str[1-32]"
+
+    nulled_props = _props(analytics, 2)
+    assert nulled.isError is False
+    assert nulled_props["[MCP] Param Keys"] == ["limit", "query"]
+    assert nulled_props["[MCP] Param Shape"] == "limit:null;query:str[1-32]"
+
+    empty_props = _props(analytics, 3)
+    assert empty.isError is False
+    assert empty_props["[MCP] Param Count"] == 0
+    assert empty_props["[MCP] Param Keys"] == []
+
+
+@pytest.mark.anyio
+async def test_nested_instrumented_call_does_not_reuse_the_outer_argument_names() -> None:
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @analytics.instrument_tool(name="inner")
+    async def inner(detail: str, flag: bool = False) -> str:
+        return detail
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="outer")
+    async def outer(query: str, limit: int | None = None) -> str:
+        await inner(detail="from-outer", flag=False)
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("outer", {"query": "hi"})
+
+    assert result.isError is False
+    # inner settles, and emits, before outer's handler returns.
+    inner_props, outer_props = (
+        event["event_properties"] for event in analytics.get_events(RESPONSE)
+    )
+    assert outer_props["[MCP] Tool Name"] == "outer"
+    assert outer_props["[MCP] Param Keys"] == ["query"]
+    # inner did not claim the outer request, so the fallback keeps `detail`
+    # and drops `flag=False`, which is the signature default.
+    assert inner_props["[MCP] Tool Name"] == "inner"
+    assert inner_props["[MCP] Param Keys"] == ["detail"]
+    assert inner_props["[MCP] Param Shape"] == "detail:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_instrumented_helper_inside_uninstrumented_tool_falls_back() -> None:
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @analytics.instrument_tool(name="helper")
+    async def helper(detail: str, limit: int) -> str:
+        return detail
+
+    @mcp.tool()
+    async def plain_tool(query: str) -> str:
+        await helper(detail="x", limit=5)
+        return "ok"
+
+    analytics.instrument_server(mcp, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("plain_tool", {"query": "hi"})
+
+    assert result.isError is False
+    props = _props(analytics)
+    assert props["[MCP] Tool Name"] == "helper"
+    # The helper claimed the outer request, but `query` does not overlap its
+    # kwargs, so capture falls back to the identity check instead of emitting
+    # an empty Param Keys / Param Count 0.
+    assert props["[MCP] Param Keys"] == ["detail", "limit"]
+    assert props["[MCP] Param Count"] == 2
+    assert props["[MCP] Param Shape"] == "detail:str[1-32];limit:num"
+
+
+@pytest.mark.anyio
+async def test_low_level_call_tool_captures_the_arguments_mapping() -> None:
+    analytics = make_mock()
+    server = Server("low-level")
+
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        return [
+            Tool(
+                name="search",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            )
+        ]
+
+    @server.call_tool()
+    @analytics.instrument_tool(name="search")
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+        assert name == "search"
+        return [TextContent(type="text", text="ok")]
+
+    analytics.instrument_server(server, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("search", {"query": "hi"})
+
+    assert result.isError is False
+    props = _props(analytics)
+    assert props["[MCP] Param Keys"] == ["query"]
+    assert props["[MCP] Param Count"] == 1
+    assert props["[MCP] Param Shape"] == "query:str[1-32]"
+
+
+@pytest.mark.anyio
+async def test_call_tool_parameter_named_json_uses_the_client_key() -> None:
+    analytics = make_mock()
+    mcp = FastMCP("test-mcp")
+
+    @mcp.tool()
+    @analytics.instrument_tool(name="dump")
+    async def dump(json: str) -> str:
+        return json
+
+    analytics.instrument_server(mcp, user_id="user-1")
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=Implementation(name="cursor", version="0.40")
+    ) as client:
+        result = await client.call_tool("dump", {"json": "hi"})
+
+    assert result.isError is False
+    props = _props(analytics)
+    assert props["[MCP] Param Keys"] == ["json"]
+    assert props["[MCP] Param Shape"] == "json:str[1-32]"

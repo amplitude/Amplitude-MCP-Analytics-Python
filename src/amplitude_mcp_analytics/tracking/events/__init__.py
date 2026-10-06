@@ -105,6 +105,7 @@ def emit_tool_call_response(
     duration_ms: float,
     request_size_bytes: int | None = None,
     response_size_bytes: int | None = None,
+    param_properties: dict[str, Any] | None = None,
     sanitize: ErrorMessageSanitizer | None = None,
 ) -> None:
     """Emit ``[MCP] Tool Call Response``. Called by ``instrument_tool``; the
@@ -118,6 +119,8 @@ def emit_tool_call_response(
         properties[K["request_size"]] = request_size_bytes
     if response_size_bytes is not None:
         properties[K["response_size"]] = response_size_bytes
+    if param_properties:
+        properties.update(param_properties)
 
     if ctx.error is not None:
         message = sanitize_error_message(ctx.error.message, sanitize)

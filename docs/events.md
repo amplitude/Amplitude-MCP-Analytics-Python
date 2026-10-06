@@ -259,6 +259,11 @@ The default tool-execution event — one per call of a handler wrapped with
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock handler duration, rounded |
 | `[MCP] Request Size` | number (bytes) | when the call carried arguments, when serializable | Serialized byte size of the tool's arguments — the handler's keyword arguments (how FastMCP calls tools) or its first positional argument (low-level handlers). Absent for calls with no arguments |
 | `[MCP] Response Size` | number (bytes) | when the handler returned, when serializable | Serialized byte size of the returned result. Absent when the handler raised |
+| `[MCP] Param Keys` | string[] | argument-taking handlers, unless shape capture is disabled | Sorted top-level identifier-like parameter keys, capped at 32. Globally/tool-excluded keys and names that are not `[A-Za-z0-9_.:\\-/]{1,64}` are omitted. An injected FastMCP `Context` is not a parameter and is omitted |
+| `[MCP] Param Count` | number | argument-taking handlers, unless shape capture is disabled | Top-level supplied key count after global/tool exclusions. Includes names omitted from `[MCP] Param Keys` |
+| `[MCP] Param Shape` | string | argument-taking handlers, unless shape capture is disabled | Deterministic shallow shape: types, bucketed string lengths, and array/object counts. A nested pydantic model counts as `obj[n]` by field count. Capped at 1,024 characters including the visible `…` marker |
+| `[MCP] Param Fingerprint` | string | argument-taking handlers, unless shape capture is disabled | First 12 hexadecimal characters of SHA-256 over the emitted shape |
+| `[MCP] Param: <key>` | string, number, or boolean | when the tool declares a valid `param_capture.derive` fact | Tool-authored derived metadata after the SDK's key, value, and count backstops |
 | `[MCP] Error Message` | string | on failure | Message of the classified error |
 | `[MCP] Error Code` | string | on failure, when a specific code is known | Machine-readable error identifier — the host's `code` from `analytics.tool_error()`, a raised error's own `code` attribute, or a network code assigned by the classifier. Absent for a bare raised exception with no code |
 | `[MCP] Error Type` | string | on failure | Error category — see [Error classification](#error-classification) |
@@ -293,10 +298,53 @@ handler may enrich `ctx.tool.extra` mid-call and the values land on this event.
     "[MCP] Response Duration": 184,
     "[MCP] Request Size": 64,
     "[MCP] Response Size": 2048,
+    "[MCP] Param Keys": ["limit", "query"],
+    "[MCP] Param Count": 2,
+    "[MCP] Param Shape": "limit:num;query:str[1-32]",
+    "[MCP] Param Fingerprint": "a93d18c6a9ed",
     "feature flag": "new-ranker"
   }
 }
 ```
+
+### Parameter capture
+
+Shape capture is on by default. On a `tools/call` it keeps the argument names
+the client sent. FastMCP still invokes the handler with every declared
+parameter filled in, and an injected `Context` is dropped; neither is counted.
+A low-level handler is called as `func(name, arguments)`, so capture uses the
+first positional mapping. A direct call, with no `tools/call` frame, falls
+back to dropping a keyword that is the signature's default object. Enum
+members are recorded as their value. String lengths are UTF-16 code units,
+matching JavaScript. Parameter
+values are represented only by types, collection counts, and bucketed string
+lengths; nested content is never walked. A pydantic model nested in those
+arguments counts as `obj[n]` using its field count, without its values.
+`[MCP] Param Keys` is capped at 32, while `[MCP] Param Count` is uncapped, so
+`Param Count > len(Param Keys)` indicates omitted keys. Shape truncation
+happens only at a complete `key:type` boundary, and the 1,024 character limit
+includes the final `…`.
+
+`MCPAnalyticsConfig(param_capture={"shape": False})` disables shape capture.
+`never_keys` **replaces** the global exclusion list, which defaults to
+`("rationale", "context")` — include those names if you still want them
+omitted. Pass `[]` to exclude nothing globally. `param_capture["never"]` on
+the tool adds per-tool exclusions and also drops matching derived fact names.
+A declared `route_key` contributes a `route=<value>` prefix only for a small
+schema enum: an identifier-like string, a finite number, or a boolean. Do not
+point it at high-cardinality id fields.
+
+Servers can also opt in through `param_capture["derive"]`. It emits up to
+eight scalar `[MCP] Param: <key>` facts. Property suffixes must be bounded
+identifier-like names. String values longer than 256 characters or containing
+`@`, quotes, or newlines are dropped, as are `NaN` and `Infinity`. A callback
+that raises or returns the wrong shape emits no derived facts and cannot
+affect the handler.
+
+A mistyped opt-in field on `param_capture` logs a warning and is ignored;
+default shape capture still runs. Only a non-object `param_capture` disables
+capture for that tool. Capture does not run at all when `instrument_server`
+has not bound a server, preserving `instrument_tool`'s no-op passthrough.
 
 ## `[MCP] Tool Call Rejected`
 
@@ -598,6 +646,11 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Error Message` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
 | `[MCP] Error Type` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
 | `[MCP] Is Error` | boolean | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |
+| `[MCP] Param Count` | number | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
+| `[MCP] Param Fingerprint` | string | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
+| `[MCP] Param Keys` | string[] | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
+| `[MCP] Param Shape` | string | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
+| `[MCP] Param: <key>` | string, number, or boolean | `Tool Call Response` (when declared by `param_capture["derive"]`) |
 | `[MCP] Protocol Version` | string | All (when known) |
 | `[MCP] Rationale` | string | Tool-scope (opt-in, via `set_rationale`; redactable via [`sanitize_rationale`](#redacting-mcp-rationale)) |
 | `[MCP] Rejection Reason` | string | `Tool Call Rejected` |

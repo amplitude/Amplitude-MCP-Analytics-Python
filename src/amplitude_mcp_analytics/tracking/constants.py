@@ -84,6 +84,10 @@ EVENT_PROPERTY_KEYS: dict[str, str] = {
     "response_duration": "[MCP] Response Duration",
     "response_size": "[MCP] Response Size",
     "request_size": "[MCP] Request Size",
+    "param_keys": "[MCP] Param Keys",
+    "param_count": "[MCP] Param Count",
+    "param_shape": "[MCP] Param Shape",
+    "param_fingerprint": "[MCP] Param Fingerprint",
     # server connection / capability outcome
     "tool_count": "[MCP] Tool Count",
     "tool_names": "[MCP] Tool Names",

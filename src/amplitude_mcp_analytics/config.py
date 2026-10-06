@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, TypedDict
+
+from .utils.logger import get_logger
 
 __all__ = [
     "AutocaptureConfig",
+    "DEFAULT_PARAM_NEVER_KEYS",
     "ErrorMessageSanitizer",
     "MCPAnalyticsConfig",
+    "ParamCaptureConfig",
     "RationaleSanitizer",
     "ResolvedAutocapture",
+    "ResolvedParamCapture",
 ]
 
 
@@ -72,6 +77,57 @@ Same fail-closed contract as :data:`ErrorMessageSanitizer` — a sanitizer that
 raises, or returns a non-string, omits the property rather than falling back to
 the raw text.
 """
+
+#: Parameter keys omitted from capture for every tool. ``never_keys`` replaces
+#: this list when provided — it is not unioned with it.
+DEFAULT_PARAM_NEVER_KEYS: tuple[str, ...] = ("rationale", "context")
+
+
+class ParamCaptureConfig(TypedDict, total=False):
+    """Global controls for tool-parameter capture.
+
+    - ``shape``: emit content-free parameter shape metadata on tool-call
+      events. Default ``True``.
+    - ``never_keys``: parameter keys excluded from capture for every tool.
+      **Replaces** :data:`DEFAULT_PARAM_NEVER_KEYS` when provided — it is not
+      unioned. Include ``rationale`` and ``context`` if you still want those
+      omitted. Pass ``[]`` to exclude nothing globally. Tool-level ``never``
+      is unioned with the resolved list.
+    """
+
+    shape: bool
+    never_keys: Sequence[str]
+
+
+@dataclass(frozen=True)
+class ResolvedParamCapture:
+    """Resolved global parameter-capture controls."""
+
+    shape: bool
+    never_keys: tuple[str, ...]
+
+
+def _resolve_never_keys(value: Any) -> tuple[str, ...]:
+    """``never_keys`` replaces the default only when it is a list or tuple.
+
+    Non-strings inside that list are dropped. Anything else (including a bare
+    string, which would otherwise iterate as characters, or a set) keeps the
+    default and logs a warning — the same failure mode as a mistyped tool-level
+    ``never``.
+    """
+    if isinstance(value, (list, tuple)):
+        kept = tuple(key for key in value if isinstance(key, str))
+        if len(kept) != len(value):
+            get_logger().warning(
+                "AmplitudeMCPAnalytics: non-string entries in param_capture.never_keys "
+                "were ignored."
+            )
+        return kept
+    get_logger().warning(
+        "AmplitudeMCPAnalytics: param_capture.never_keys must be a list of strings; "
+        "the default exclusion list was kept."
+    )
+    return DEFAULT_PARAM_NEVER_KEYS
 
 
 @dataclass(frozen=True)
@@ -137,6 +193,7 @@ class MCPAnalyticsConfig:
         emit_anonymous_event: bool = False,
         sanitize_error_message: ErrorMessageSanitizer | None = None,
         sanitize_rationale: RationaleSanitizer | None = None,
+        param_capture: ParamCaptureConfig | None = None,
     ) -> None:
         #: Emit verbose internal logging. Default ``False``.
         self.debug = debug
@@ -162,4 +219,18 @@ class MCPAnalyticsConfig:
         #: configuring this changes nothing on the wire until you do).
         self.sanitize_rationale = (
             sanitize_rationale if callable(sanitize_rationale) else None
+        )
+        raw_capture = param_capture if isinstance(param_capture, Mapping) else {}
+        raw_shape = raw_capture.get("shape", True)
+        never_keys = (
+            DEFAULT_PARAM_NEVER_KEYS
+            if "never_keys" not in raw_capture
+            else _resolve_never_keys(raw_capture.get("never_keys"))
+        )
+        #: Content-free parameter metadata on tool-call events. ``shape``
+        #: defaults on. ``never_keys`` defaults to ``rationale`` and ``context``
+        #: and replaces that list when set.
+        self.param_capture = ResolvedParamCapture(
+            shape=raw_shape if isinstance(raw_shape, bool) else True,
+            never_keys=never_keys,
         )

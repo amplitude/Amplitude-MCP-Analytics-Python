@@ -256,6 +256,85 @@ convention. Callable at any depth inside an instrumented handler (like
 `set_identity`); truncated to 1000 characters; last write wins. Omitted
 entirely when never set.
 
+## Tool parameter capture
+
+For handlers that receive arguments, `[MCP] Tool Call Response` automatically
+includes content-free metadata describing which parameters were supplied and
+their shallow types:
+
+- `[MCP] Param Keys` — sorted top-level keys, capped at 32
+- `[MCP] Param Count` — the full top-level key count
+- `[MCP] Param Shape` — deterministic types, array/object counts, and bucketed
+  string lengths, capped at 1,024 characters
+- `[MCP] Param Fingerprint` — a stable 12-character hash of the shape
+
+Values are not included. Nested lists, dicts, and pydantic models are counted,
+not traversed, and exact string lengths are bucketed. Only identifier-like keys
+(`[A-Za-z0-9_.:\\-/]{1,64}`) appear on `[MCP] Param Keys` and
+`[MCP] Param Shape`; caller-controlled names from open schemas (for example an
+email used as a key) are omitted there but still counted in
+`[MCP] Param Count`. By default, `rationale` and `context` are also excluded
+because servers commonly use those names for content-bearing injected metadata.
+An injected FastMCP `Context` is not a parameter and is left out entirely.
+On a `tools/call`, capture keeps the argument names the client sent. FastMCP
+still calls the handler with every declared parameter filled in; those
+filled-in values are not counted. A function you call directly, rather than
+through that request, falls back to dropping a keyword that is the signature's
+default object. Enum members are captured as their value, so a `str` enum
+route is `route=list` rather than `route=Action.LIST`.
+
+Multiplexed tools can include a safe route value in the shape (`route_key` is
+for small schema enums — string, finite number, or boolean — not `user_id`-
+style fields). Tools can also opt into bounded scalar facts derived from
+their inputs:
+
+```python
+@mcp.tool()
+@analytics.instrument_tool(
+    name="manage_items",
+    param_capture={
+        "route_key": "action",
+        "never": ["private_metadata"],
+        "derive": lambda params: {
+            "item_count": len(params["items"]) if isinstance(params.get("items"), list) else 0,
+            "destructive": params.get("action") == "delete",
+        },
+    },
+)
+async def manage_items(action: str, items: list[str]) -> str:
+    return await do_work(action, items)
+```
+
+Derived facts are emitted as `[MCP] Param: <key>`. The SDK accepts at most eight
+per tool call and drops non-scalars, non-finite numbers, long strings, unsafe
+property names, and strings containing email or free-text indicators such as
+`@`, quotes, or newlines. `never` applies to both input keys and those derived
+fact names. A raising `derive` callback is ignored and never affects the tool
+response. A mistyped opt-in field (`route_key`, `derive`, `never`) logs a
+warning and is ignored; default shape capture still runs. Only a non-object
+`param_capture` disables capture for that tool.
+
+Disable automatic shape capture, or replace the global exclusion list, through
+the SDK config. `never_keys` **replaces** the default `("rationale", "context")`
+— include those names if you still want them omitted. Opted-in `derive` facts
+still run when `shape` is disabled:
+
+```python
+from amplitude_mcp_analytics import DEFAULT_PARAM_NEVER_KEYS, MCPAnalyticsConfig
+
+MCPAnalyticsConfig(
+    param_capture={
+        "shape": False,
+        "never_keys": [*DEFAULT_PARAM_NEVER_KEYS, "reason", "customer_context"],
+    },
+)
+```
+
+The SDK may inspect and serialize inputs to derive this metadata and
+`[MCP] Request Size`, but it never emits input content unless the server author
+explicitly opts into a derived fact or calls a content-bearing API such as
+`set_rationale`.
+
 ## Error HTTP status
 
 When a tool call fails on a raised error that carries an HTTP status
