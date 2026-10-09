@@ -137,7 +137,7 @@ class TestTrackServerEvent:
 
         props = client.tracked[0]["event_properties"]
         assert props["org url"] == "amplitude"
-        assert props["user email"] == "a@b.com"
+        assert props["user email"] == "[email]"
 
     def test_caller_properties_win_over_ctx_extra_values(self) -> None:
         # precedence chain: typed < extra < caller
@@ -146,8 +146,9 @@ class TestTrackServerEvent:
             server=McpServerInfo(name="my-server"),
             transport="streamable-http",
             identity=McpIdentity(user_id="u1", resolved_from="explicit"),
-            extra={"user email": "from-extra@x.com"},
+            extra={"user email": "from-extra a@b.com"},
         )
-        track_server_event(client, ctx, "mcp: collision", {"user email": "from-caller@x.com"})
+        track_server_event(client, ctx, "mcp: collision", {"user email": "from-caller c@d.com"})
 
-        assert client.tracked[0]["event_properties"]["user email"] == "from-caller@x.com"
+        # Caller wins, then free-form redaction runs on the merged value.
+        assert client.tracked[0]["event_properties"]["user email"] == "from-caller [email]"

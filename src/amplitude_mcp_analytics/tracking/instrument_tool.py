@@ -50,6 +50,7 @@ from ..context.types import (
 from ..context.vars import _context_var
 from ..core.build_context import build_tool_context
 from ..core.identity import ServerIdentity
+from ..core.privacy import PrivacyConfig
 from ..core.serialize import payload_byte_size
 from ..core.tool_call_hook import mark_tool_call_dispatched
 from ..errors import build_tool_error, classify_error, error_message_from_result, is_error_result
@@ -105,6 +106,9 @@ class InstrumentToolDependencies:
 
     sanitize_error_message: ErrorMessageSanitizer | None = None
     """Rewrites/drops ``[MCP] Error Message``, from ``config.sanitize_error_message``."""
+
+    privacy: PrivacyConfig | None = None
+    """Redaction policy applied to free-form event content at emit time."""
 
     capture_param_shape: bool = True
     """Whether content-free parameter shape capture is enabled. From
@@ -404,6 +408,7 @@ def instrument_tool(
             response_size_bytes=payload_byte_size(returned) if not raised else None,
             param_properties=param_properties,
             sanitize=deps.sanitize_error_message,
+            privacy=deps.privacy,
         )
 
     if _is_async_callable(handler):
