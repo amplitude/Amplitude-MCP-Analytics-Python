@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..core.privacy import PrivacyConfig
+
 __all__ = ["AmplitudeFields", "DefaultServerFields", "DefaultToolFields", "TrackEventOptions"]
 
 # Reserved (SDK-derived) fields use snake_case keys internally and are mapped
@@ -35,3 +37,10 @@ class TrackEventOptions:
 
     drop_extra_props: bool = False
     """Omit the ctx ``extra`` (and ``tool.extra``) bags from the event."""
+    privacy: PrivacyConfig | None = None
+    """Redaction policy for free-form event content. Supplied by the client
+    from ``MCPAnalyticsConfig``; when omitted, built-in PII patterns still run.
+
+    @internal Not part of the supported caller API. Configure redaction on
+    ``MCPAnalyticsConfig`` instead of passing a policy here.
+    """

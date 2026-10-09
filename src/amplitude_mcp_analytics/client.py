@@ -143,6 +143,10 @@ class AmplitudeMCPAnalytics:
         #: Version string of the MCP server being instrumented.
         self.server_version = server_version
         self.config = config if config is not None else MCPAnalyticsConfig()
+        #: Redaction policy applied to free-form event content at emit time,
+        #: derived from ``config``. Threaded into every track* / default-event
+        #: emit site. @internal
+        self._privacy = self.config.to_privacy_config()
 
         # Wrap the raw client with the delivery hooks. Ordering is load-bearing
         # (see core/delivery.py): the dry-run gate sits outermost so dry-run
@@ -170,6 +174,16 @@ class AmplitudeMCPAnalytics:
 
     def _on_tracked(self) -> None:
         self._track_count_since_flush += 1
+
+    def _event_options(self, options: TrackEventOptions | None) -> TrackEventOptions:
+        """Attach this client's redaction policy, keeping ``drop_extra_props``.
+
+        The policy always comes from ``config``. @internal
+        """
+        return TrackEventOptions(
+            drop_extra_props=options.drop_extra_props if options is not None else False,
+            privacy=self._privacy,
+        )
 
     def track(self, event: AmplitudeEvent) -> None:
         """Low-level passthrough to the underlying Amplitude client. @internal"""
@@ -277,9 +291,12 @@ class AmplitudeMCPAnalytics:
     ) -> None:
         """Emit a server-scope custom event. Inherits identity/tenant/session/
         client/server/auth/transport from ``ctx``; caller-supplied properties
-        win on collision. Drops silently when the event has neither an identity
+        win on collision. Free-form strings are redacted before delivery.
+        Drops silently when the event has neither an identity
         nor a tenant, and on underlying client failure — never raises."""
-        _track_server_event(self._amplitude, ctx, event_name, properties, options)
+        _track_server_event(
+            self._amplitude, ctx, event_name, properties, self._event_options(options)
+        )
 
     def track_tool_event(
         self,
@@ -291,7 +308,9 @@ class AmplitudeMCPAnalytics:
         """Emit a tool-scope custom event. Same contract as
         :meth:`track_server_event` plus the tool metadata inherited from the
         tool-scope ``ctx``."""
-        _track_tool_event(self._amplitude, ctx, event_name, properties, options)
+        _track_tool_event(
+            self._amplitude, ctx, event_name, properties, self._event_options(options)
+        )
 
     def instrument_tool(
         self,
@@ -367,6 +386,7 @@ class AmplitudeMCPAnalytics:
                 resolve_identity=resolve_identity,
                 track_tool_calls=self.config.autocapture.tool_calls,
                 sanitize_error_message=self.config.sanitize_error_message,
+                privacy=self._privacy,
                 capture_param_shape=self.config.param_capture.shape,
                 param_never_keys=self.config.param_capture.never_keys,
                 logger=get_logger(),
@@ -594,6 +614,7 @@ class AmplitudeMCPAnalytics:
                 error_code=tool_error.code if tool_error is not None else None,
                 error_type=tool_error.type if tool_error is not None else None,
                 sanitize=sanitize,
+                privacy=self._privacy,
             )
 
         def on_tool_call_settled(outcome: dict[str, Any]) -> None:
@@ -671,6 +692,7 @@ class AmplitudeMCPAnalytics:
                     200 if ctx.transport in ("streamable-http", "sse") else None
                 ),
                 sanitize=sanitize,
+                privacy=self._privacy,
             )
 
         def install_hooks() -> None:
@@ -697,14 +719,16 @@ class AmplitudeMCPAnalytics:
             scope.ctx = ctx
             self._server_ctx = ctx
             scope.session_start = time.perf_counter()
-            emit_session_initialized(self._amplitude, ctx)
+            emit_session_initialized(self._amplitude, ctx, self._privacy)
 
         def on_ended(scope: ServerScope, duration_ms: float) -> None:
             # `[MCP] Session Ended` on run teardown — only when a session was
             # initialized and the run's transport persisted beyond one request.
             if scope.ctx is None:
                 return
-            emit_session_ended(self._amplitude, scope.ctx, duration_ms=duration_ms)
+            emit_session_ended(
+                self._amplitude, scope.ctx, duration_ms=duration_ms, privacy=self._privacy
+            )
 
         install_run_wrapper(
             low_level,

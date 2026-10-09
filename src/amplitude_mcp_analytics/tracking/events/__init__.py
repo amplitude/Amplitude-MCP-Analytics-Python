@@ -7,6 +7,7 @@ from typing import Any
 
 from ...config import ErrorMessageSanitizer
 from ...context.types import McpServerContext, McpToolContext
+from ...core.privacy import PrivacyConfig
 from ...types import AmplitudeClientLike
 from ..constants import (
     ATTEMPTED_TOOL_NAME_MAX,
@@ -22,6 +23,7 @@ from ..constants import (
 )
 from ..sanitize_error_message import sanitize_error_message
 from ..track import track_server_event, track_tool_event
+from ..types import TrackEventOptions
 
 __all__ = [
     "emit_session_ended",
@@ -32,12 +34,22 @@ __all__ = [
 ]
 
 
-def emit_session_initialized(amplitude: AmplitudeClientLike, ctx: McpServerContext) -> None:
+def _options(privacy: PrivacyConfig | None) -> TrackEventOptions | None:
+    if privacy is None:
+        return None
+    return TrackEventOptions(privacy=privacy)
+
+
+def emit_session_initialized(
+    amplitude: AmplitudeClientLike,
+    ctx: McpServerContext,
+    privacy: PrivacyConfig | None = None,
+) -> None:
     """Emit ``[MCP] Session Initialized`` at the ``initialize`` handshake.
     Carries only the ctx-derived reserved props; the server ``ctx.extra`` bag
     rides along downstream. Session events apply only where a protocol session
     exists — never fabricated on stateless HTTP. @internal"""
-    track_server_event(amplitude, ctx, SESSION_INITIALIZED)
+    track_server_event(amplitude, ctx, SESSION_INITIALIZED, None, _options(privacy))
 
 
 def emit_session_ended(
@@ -45,6 +57,7 @@ def emit_session_ended(
     ctx: McpServerContext,
     *,
     duration_ms: float | None = None,
+    privacy: PrivacyConfig | None = None,
 ) -> None:
     """Emit ``[MCP] Session Ended`` when the transport closes — only for
     sessions that emitted ``[MCP] Session Initialized`` first. Adds
@@ -52,7 +65,7 @@ def emit_session_ended(
     properties: dict[str, Any] = {}
     if duration_ms is not None:
         properties[K["session_duration"]] = round(duration_ms)
-    track_server_event(amplitude, ctx, SESSION_ENDED, properties)
+    track_server_event(amplitude, ctx, SESSION_ENDED, properties, _options(privacy))
 
 
 def emit_tools_listed(
@@ -68,6 +81,7 @@ def emit_tools_listed(
     error_code: str | None = None,
     error_type: str | None = None,
     sanitize: ErrorMessageSanitizer | None = None,
+    privacy: PrivacyConfig | None = None,
 ) -> None:
     """Emit ``[MCP] Tools Listed``. Called by ``instrument_server`` when a
     ``tools/list`` request is served. @internal"""
@@ -94,7 +108,7 @@ def emit_tools_listed(
     if error_type is not None:
         properties[K["error_type"]] = error_type
 
-    track_server_event(amplitude, ctx, TOOLS_LISTED, properties)
+    track_server_event(amplitude, ctx, TOOLS_LISTED, properties, _options(privacy))
 
 
 def emit_tool_call_response(
@@ -107,6 +121,7 @@ def emit_tool_call_response(
     response_size_bytes: int | None = None,
     param_properties: dict[str, Any] | None = None,
     sanitize: ErrorMessageSanitizer | None = None,
+    privacy: PrivacyConfig | None = None,
 ) -> None:
     """Emit ``[MCP] Tool Call Response``. Called by ``instrument_tool``; the
     outcome props ride as ``track_tool_event``'s ``properties`` (ctx-derived
@@ -134,7 +149,7 @@ def emit_tool_call_response(
         if ctx.error.http_status is not None:
             properties[K["error_http_status"]] = ctx.error.http_status
 
-    track_tool_event(amplitude, ctx, TOOL_CALL_RESPONSE, properties)
+    track_tool_event(amplitude, ctx, TOOL_CALL_RESPONSE, properties, _options(privacy))
 
 
 def emit_tool_call_rejected(
@@ -150,6 +165,7 @@ def emit_tool_call_rejected(
     response_size_bytes: int | None = None,
     response_http_status: int | None = None,
     sanitize: ErrorMessageSanitizer | None = None,
+    privacy: PrivacyConfig | None = None,
 ) -> None:
     """Emit ``[MCP] Tool Call Rejected``. Called by ``instrument_server`` when a
     ``tools/call`` request fails before any tool callback runs. A
@@ -177,4 +193,4 @@ def emit_tool_call_rejected(
     if response_http_status is not None:
         properties[K["response_http_status"]] = response_http_status
 
-    track_server_event(amplitude, ctx, TOOL_CALL_REJECTED, properties)
+    track_server_event(amplitude, ctx, TOOL_CALL_REJECTED, properties, _options(privacy))

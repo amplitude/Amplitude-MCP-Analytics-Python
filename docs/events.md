@@ -224,7 +224,7 @@ call time (tools added or removed after startup are reflected).
 | `[MCP] Tool Names Truncated` | boolean | only when capped | `true` when more than 100 names were returned and the list was truncated; absent otherwise |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock duration of the `tools/list` handler |
 | `[MCP] Response Size` | number (bytes) | on success, when serializable | Serialized byte size of the full `tools/list` result |
-| `[MCP] Error Message` | string | on failure | Message of the classified error |
+| `[MCP] Error Message` | string | on failure | Message of the classified error, then passed through [built-in PII redaction](#redacting-mcp-error-message) |
 | `[MCP] Error Code` | string | on failure, when a specific code is known | Machine-readable error identifier — see [Error classification](#error-classification) |
 | `[MCP] Error Type` | string | on failure | Error category — see [Error classification](#error-classification) |
 
@@ -254,7 +254,7 @@ The default tool-execution event — one per call of a handler wrapped with
 | `[MCP] Tool Owner` | string | when set | `owner` from the tool metadata |
 | `[MCP] Tool Tags` | string[] | when set, non-empty | `tags` from the tool metadata (`meta`) |
 | `[MCP] Tool Category` | string | when set, non-empty | `category` from the tool metadata (`meta`) |
-| `[MCP] Rationale` | string | when the host called `set_rationale` during the call, unless dropped by [`sanitize_rationale`](#redacting-mcp-rationale) | Why the agent called this tool, as supplied by the host — never sniffed out of tool inputs by the SDK. Truncated to 1000 characters |
+| `[MCP] Rationale` | string | when the host called `set_rationale` during the call, unless dropped by [`sanitize_rationale`](#redacting-mcp-rationale) | Why the agent called this tool, as supplied by the host — never sniffed out of tool inputs by the SDK. Truncated to 1000 characters, then passed through [built-in PII redaction](#redacting-mcp-rationale) |
 | `[MCP] Is Error` | boolean | always | `true` on a raised exception or an in-band `isError` result |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock handler duration, rounded |
 | `[MCP] Request Size` | number (bytes) | when the call carried arguments, when serializable | Serialized byte size of the tool's arguments — the handler's keyword arguments (how FastMCP calls tools) or its first positional argument (low-level handlers). Absent for calls with no arguments |
@@ -263,8 +263,8 @@ The default tool-execution event — one per call of a handler wrapped with
 | `[MCP] Param Count` | number | argument-taking handlers, unless shape capture is disabled | Top-level supplied key count after global/tool exclusions. Includes names omitted from `[MCP] Param Keys` |
 | `[MCP] Param Shape` | string | argument-taking handlers, unless shape capture is disabled | Deterministic shallow shape: types, bucketed string lengths, and array/object counts. A nested pydantic model counts as `obj[n]` by field count. Capped at 1,024 characters including the visible `…` marker |
 | `[MCP] Param Fingerprint` | string | argument-taking handlers, unless shape capture is disabled | First 12 hexadecimal characters of SHA-256 over the emitted shape |
-| `[MCP] Param: <key>` | string, number, or boolean | when the tool declares a valid `param_capture.derive` fact | Tool-authored derived metadata after the SDK's key, value, and count backstops |
-| `[MCP] Error Message` | string | on failure | Message of the classified error |
+| `[MCP] Param: <key>` | string, number, or boolean | when the tool declares a valid `param_capture.derive` fact | Tool-authored derived metadata after the SDK's key, value, and count backstops, then passed through [built-in PII redaction](../README.md#privacy-and-redaction) |
+| `[MCP] Error Message` | string | on failure | Message of the classified error, then passed through [built-in PII redaction](#redacting-mcp-error-message) |
 | `[MCP] Error Code` | string | on failure, when a specific code is known | Machine-readable error identifier — the host's `code` from `analytics.tool_error()`, a raised error's own `code` attribute, or a network code assigned by the classifier. Absent for a bare raised exception with no code |
 | `[MCP] Error Type` | string | on failure | Error category — see [Error classification](#error-classification) |
 | `[MCP] Error HTTP Status` | number | on failure, when the failure carried one | HTTP status attached to the tool's failure (the tool's, not the transport's) — see [Error classification](#error-classification) |
@@ -408,7 +408,7 @@ reserved key that per-tool dashboards slice on.
 | `[MCP] Attempted Tool Name` | string | always | `params.name` as sent by the client — unvalidated input, capped at **200** characters |
 | `[MCP] Rejection Reason` | string | always | Why the call was rejected: `unknown_tool`, `disabled_tool`, `schema_validation`, or `unrecognized` — see [Telling rejections apart](#telling-rejections-apart) |
 | `[MCP] Is Error` | boolean | always | Always `true` — every rejection is a failure |
-| `[MCP] Error Message` | string | unless dropped by [`sanitize_error_message`](#redacting-mcp-error-message) | Message of the classified error, as the client saw it (e.g. `Unknown tool: foo`, `Input validation error: …`) |
+| `[MCP] Error Message` | string | unless dropped by [`sanitize_error_message`](#redacting-mcp-error-message) | Message of the classified error, as the client saw it (e.g. `Unknown tool: foo`, `Input validation error: …`), then passed through [built-in PII redaction](#redacting-mcp-error-message) |
 | `[MCP] Error Code` | string | when recoverable | The JSON-RPC error code for the rejection (e.g. `-32602` invalid params). The Python SDK reports pre-dispatch failures as in-band results with no structural code, so it is parsed back out of an `MCP error <code>:` message prefix when one is present; an attributed in-band rejection with no recoverable code falls back to `-32603` (internal error). Absent only when a raised rejection carried no code at all |
 | `[MCP] Error Type` | string | always | Always `protocol_error` — see [Error classification](#error-classification) |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock duration of the `tools/call` handler |
@@ -535,11 +535,20 @@ It applies to every event that carries the property — `[MCP] Tools Listed`,
 bypass it. `[MCP] Error Code` and `[MCP] Error Type` are untouched, which keeps
 failures segmentable with no message text in the event stream.
 
+The sanitizer runs first and sees the raw message. Built-in PII redaction
+(`redact_pii`, on by default) then runs on whatever string it returns, so an
+email left in the rewritten message is still replaced. Returning `None` omits
+the property before redaction. With no sanitizer configured, the raw message
+is still passed through the built-in patterns. See
+[Privacy and redaction](../README.md#privacy-and-redaction) for the patterns,
+custom rules, and which fields are exempt.
+
 Two deliberate behaviors: the sanitizer never sees a successful call, and it
 **fails closed**. A sanitizer that raises (or returns anything other than a
 string) omits the property rather than falling back to the raw message — the
 value it exists to suppress is never emitted because the function was buggy. The
 rest of the event is unaffected, and the tool response never breaks.
+`custom_redaction_fn` is a different hook: a raise there keeps the current text.
 
 The message reaching the client is never modified; this affects telemetry only.
 To control the client-facing text as well, build the result with
@@ -570,8 +579,10 @@ It applies wherever the property is lowered — the default
 `[MCP] Tool Call Response` event and every tool-scope custom event of the same
 invocation — so no emit path bypasses it. A sanitizer that raises, or returns
 anything other than a string, omits the property rather than falling back to the
-raw text. Left unset, the rationale is emitted exactly as supplied (the v0
-default: configuring nothing changes nothing on the wire).
+raw text. Left unset, the hook itself is a no-op. Built-in PII redaction still
+runs on whatever string remains (including the raw rationale when no sanitizer
+is set), the same way it does for `[MCP] Error Message`. See
+[Privacy and redaction](../README.md#privacy-and-redaction).
 
 The rationale is host-supplied and never travels back to the client, so this
 affects telemetry only.
@@ -609,9 +620,14 @@ reserved (SDK-derived)  <  extra (context bag)  <  properties (per call)
 All reserved names carry the `[MCP] ` prefix — keep it out of your own keys
 and collisions never arise.
 
-Values are sent exactly as provided; the SDK does not escape, truncate, or
-redact `extra` or `properties` values. Apply output encoding where the data is
-rendered, and keep sensitive values out.
+Free-form strings in `extra` and per-call `properties` are redacted before
+delivery. Reserved dimension fields — user id, device id, group, session id,
+server and tool names, error type, and the other `[MCP] ` properties except
+`[MCP] Rationale` and `[MCP] Error Message` — are not. `[MCP] Rationale`,
+`[MCP] Error Message`, and opt-in `[MCP] Param:` values are redacted. The SDK
+does not otherwise escape or truncate those strings. Apply output encoding
+where the data is rendered. See
+[Privacy and redaction](../README.md#privacy-and-redaction).
 
 ## Measurement conventions
 
@@ -643,16 +659,16 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Client Version` | string | All (when known) |
 | `[MCP] Error Code` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — only when a specific code is known |
 | `[MCP] Error HTTP Status` | number | `Tool Call Response` (when the failure carried an HTTP status — the tool's, not the transport's) |
-| `[MCP] Error Message` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
+| `[MCP] Error Message` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — after [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction) |
 | `[MCP] Error Type` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
 | `[MCP] Is Error` | boolean | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |
 | `[MCP] Param Count` | number | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
 | `[MCP] Param Fingerprint` | string | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
 | `[MCP] Param Keys` | string[] | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
 | `[MCP] Param Shape` | string | `Tool Call Response` (argument-taking handlers, shape capture enabled) |
-| `[MCP] Param: <key>` | string, number, or boolean | `Tool Call Response` (when declared by `param_capture["derive"]`) |
+| `[MCP] Param: <key>` | string, number, or boolean | `Tool Call Response` (when declared by `param_capture["derive"]`; string values pass through [built-in PII redaction](../README.md#privacy-and-redaction)) |
 | `[MCP] Protocol Version` | string | All (when known) |
-| `[MCP] Rationale` | string | Tool-scope (opt-in, via `set_rationale`; redactable via [`sanitize_rationale`](#redacting-mcp-rationale)) |
+| `[MCP] Rationale` | string | Tool-scope (opt-in, via `set_rationale`; [`sanitize_rationale`](#redacting-mcp-rationale) runs first, then [built-in PII redaction](../README.md#privacy-and-redaction)) |
 | `[MCP] Rejection Reason` | string | `Tool Call Rejected` |
 | `[MCP] Request Size` | number | `Tool Call Response` |
 | `[MCP] Response Duration` | number | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |

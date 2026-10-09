@@ -98,6 +98,42 @@ class TestParamCapture:
         ).param_capture.never_keys == ("safe",)
 
 
+class TestPrivacy:
+    def test_redacts_builtin_pii_by_default_and_has_no_custom_rules(self) -> None:
+        config = MCPAnalyticsConfig()
+        assert config.redact_pii is True
+        assert config.custom_redaction_patterns == ()
+        assert config.custom_redaction_fn is None
+
+    def test_honors_opt_out_patterns_and_a_custom_function(self) -> None:
+        def fn(text: str) -> str:
+            return text
+
+        patterns: list[str | dict[str, str]] = [
+            r"secret-\d+",
+            {"pattern": r"\bACME-\d+\b", "replacement": "[ticket]"},
+        ]
+        config = MCPAnalyticsConfig(
+            redact_pii=False,
+            custom_redaction_patterns=patterns,
+            custom_redaction_fn=fn,
+        )
+        assert config.redact_pii is False
+        assert config.custom_redaction_patterns == tuple(patterns)
+        assert config.custom_redaction_fn is fn
+        assert config.to_privacy_config().redact_text("user@x.com secret-9 ACME-4") == (
+            "user@x.com [REDACTED] [ticket]"
+        )
+
+    def test_ignores_a_non_function_custom_redaction_fn_and_a_non_list_pattern_list(self) -> None:
+        config = MCPAnalyticsConfig(
+            custom_redaction_fn="nope",  # type: ignore[arg-type]
+            custom_redaction_patterns="nope",  # type: ignore[arg-type]
+        )
+        assert config.custom_redaction_fn is None
+        assert config.custom_redaction_patterns == ()
+
+
 class TestEmitAnonymousEvent:
     def test_defaults_to_false(self) -> None:
         # Node checks both `new MCPAnalyticsConfig()` and `({})`; Python has a

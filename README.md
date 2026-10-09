@@ -417,7 +417,8 @@ AmplitudeMCPAnalytics(
 Return `None` to omit the property entirely. A sanitizer that raises fails
 **closed** — the property is omitted, never the raw message. `[MCP] Error Code`
 and `[MCP] Error Type` are unaffected, so failures stay segmentable. The text
-sent to the client never changes. See
+sent to the client never changes. Built-in PII redaction still runs on whatever
+string the sanitizer returns. See
 [Redacting `[MCP] Error Message`](docs/events.md#redacting-mcp-error-message).
 
 `[MCP] Rationale` is the other free-text property, and `sanitize_rationale` is
@@ -433,9 +434,57 @@ MCPAnalyticsConfig(
 
 It applies wherever the property is lowered — the default
 `[MCP] Tool Call Response` event and every tool-scope custom event of the same
-invocation — and, like `sanitize_error_message`, changes nothing on the wire
-until you configure it. The rationale you passed to `set_rationale` is never
+invocation — and, like `sanitize_error_message`, the hook itself changes
+nothing until you configure it. Built-in PII redaction still runs on whatever
+string it returns. The rationale you passed to `set_rationale` is never
 returned to the client either way; this affects telemetry only.
+
+## Privacy and redaction
+
+By default the SDK redacts personally identifiable information from the
+**free-form content** of every event it emits:
+
+- host enrichment on `extra` (server scope and tool metadata)
+- properties passed to `track_server_event` / `track_tool_event`
+- `[MCP] Rationale` (after `sanitize_rationale`, when that hook is set)
+- `[MCP] Error Message` (after `sanitize_error_message`, when that hook is set)
+- opt-in derived `[MCP] Param:` values
+
+The built-in patterns cover emails, phone numbers (including international
+`+` numbers), credit cards, SSNs, and IPv4/IPv6 addresses. A value that is
+entirely a base64-encoded image is replaced with `[base64 image redacted]`.
+
+Identity and dimension fields are never redacted — user id, device id,
+group, session id, server and tool names, error type, and the rest of the
+reserved `[MCP] ` properties other than rationale and error message. Redacting
+those would corrupt attribution. Raw tool arguments are not sent at all; see
+[Tool parameter capture](#tool-parameter-capture).
+
+```python
+import os
+import re
+
+from amplitude_mcp_analytics import AmplitudeMCPAnalytics, MCPAnalyticsConfig
+
+analytics = AmplitudeMCPAnalytics(
+    api_key=os.environ["AMPLITUDE_API_KEY"],
+    server_name="my-mcp-server",
+    server_version="1.0.0",
+    config=MCPAnalyticsConfig(
+        # redact_pii=True,  # built-in PII patterns (default)
+        custom_redaction_patterns=[
+            r"secret-\d+",  # bare string → "[REDACTED]"
+            {"pattern": r"\bACME-\d+\b", "replacement": "[ticket]"},
+        ],
+        custom_redaction_fn=lambda text: re.sub(r"internal-\w+", "[hidden]", text),
+    ),
+)
+```
+
+`redact_pii=False` turns off the built-in patterns (for example when you
+already redact upstream). Custom patterns, `custom_redaction_fn`, and
+base64-image replacement still run. A `custom_redaction_fn` that raises or
+returns a non-string is skipped for that value; the current text is kept.
 
 ## Context (`ctx`)
 
@@ -520,7 +569,9 @@ analytics.track_tool_event(
 )
 ```
 
-Values are sent as provided — the SDK does not escape or redact them. Apply any
+Free-form strings in `extra` and `properties` are run through
+[PII redaction](#privacy-and-redaction) before they are sent. Reserved
+dimension fields are not. The SDK does not otherwise escape values — apply
 output encoding where the data is rendered.
 
 ## Architecture decisions
@@ -565,9 +616,9 @@ Python has no peer-dependency concept, so the two peers split:
   fight theirs, so the supported range is documented and asserted at runtime
   instead of pinned. It is a dev-group dependency for the test suite.
 
-The low-level delivery utilities (delivery hooks, serverless flush accounting)
-are ported rather than depended on — no shared package, no version coupling at
-runtime.
+The low-level delivery utilities (delivery hooks, serverless flush accounting,
+privacy/PII redaction) are ported rather than depended on — no shared package,
+no version coupling at runtime.
 
 ### Ported from the Node SDK
 

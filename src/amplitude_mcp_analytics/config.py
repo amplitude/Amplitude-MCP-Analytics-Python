@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
+from .core.privacy import PrivacyConfig
 from .utils.logger import get_logger
 
 __all__ = [
@@ -168,9 +169,8 @@ def _resolve_autocapture(
 class MCPAnalyticsConfig:
     """Configuration for the Amplitude MCP Analytics SDK.
 
-    Intentionally minimal in v0 — additional knobs (privacy, content modes,
-    event-validation, on-event hooks) will be added as the features that need
-    them land.
+    Additional knobs (content modes, event-validation, on-event hooks) will be
+    added as the features that need them land.
 
     Example::
 
@@ -193,6 +193,9 @@ class MCPAnalyticsConfig:
         emit_anonymous_event: bool = False,
         sanitize_error_message: ErrorMessageSanitizer | None = None,
         sanitize_rationale: RationaleSanitizer | None = None,
+        redact_pii: bool = True,
+        custom_redaction_patterns: Sequence[str | Mapping[str, str]] | None = None,
+        custom_redaction_fn: Callable[[str], str] | None = None,
         param_capture: ParamCaptureConfig | None = None,
     ) -> None:
         #: Emit verbose internal logging. Default ``False``.
@@ -210,15 +213,40 @@ class MCPAnalyticsConfig:
         #: counts with values that never recur. Default ``False`` (dropped).
         self.emit_anonymous_event = emit_anonymous_event
         #: Rewrite or drop ``[MCP] Error Message`` before it is emitted. Left
-        #: ``None``, the message is sent as-is (the v0 default).
+        #: ``None``, the message is still passed through built-in PII redaction.
         self.sanitize_error_message = (
             sanitize_error_message if callable(sanitize_error_message) else None
         )
         #: Rewrite or drop ``[MCP] Rationale`` before it is emitted. Left
-        #: ``None``, the host-supplied rationale is sent as-is (the v0 default —
-        #: configuring this changes nothing on the wire until you do).
+        #: ``None``, the host-supplied rationale is still passed through
+        #: built-in PII redaction.
         self.sanitize_rationale = (
             sanitize_rationale if callable(sanitize_rationale) else None
+        )
+        #: Apply the built-in PII patterns (email, phone, SSN, credit card,
+        #: IPv4/IPv6) to free-form event content: ``extra``, properties passed
+        #: to ``track_server_event`` / ``track_tool_event``, ``[MCP] Rationale``,
+        #: ``[MCP] Error Message``, and derived ``[MCP] Param:`` values.
+        #: Base64-encoded images in those values are redacted regardless. On by
+        #: default. Identity and dimension fields (user id, session id, server
+        #: name, tool name, …) are never redacted.
+        self.redact_pii = redact_pii
+        if isinstance(custom_redaction_patterns, (list, tuple)):
+            patterns: tuple[str | Mapping[str, str], ...] = tuple(custom_redaction_patterns)
+        else:
+            patterns = ()
+        #: Extra redaction rules applied to free-form content after the built-in
+        #: PII patterns. A bare string is a regex replaced with ``[REDACTED]``;
+        #: a mapping supplies ``pattern`` and ``replacement``. Still runs when
+        #: ``redact_pii`` is ``False``. A bare string (or anything that is not
+        #: a list or tuple) is ignored.
+        self.custom_redaction_patterns = patterns
+        #: Final redaction pass applied to free-form content after every
+        #: pattern. Still runs when ``redact_pii`` is ``False``. A function
+        #: that raises, or that returns a non-string, is skipped for that
+        #: value and the current text is kept.
+        self.custom_redaction_fn = (
+            custom_redaction_fn if callable(custom_redaction_fn) else None
         )
         raw_capture = param_capture if isinstance(param_capture, Mapping) else {}
         raw_shape = raw_capture.get("shape", True)
@@ -233,4 +261,17 @@ class MCPAnalyticsConfig:
         self.param_capture = ResolvedParamCapture(
             shape=raw_shape if isinstance(raw_shape, bool) else True,
             never_keys=never_keys,
+        )
+
+    def to_privacy_config(self) -> PrivacyConfig:
+        """Build the redaction policy applied to free-form event content at emit time.
+
+        The client constructs this once and threads it through every emit site.
+
+        @internal Not part of the public package surface.
+        """
+        return PrivacyConfig(
+            redact_pii=self.redact_pii,
+            custom_redaction_patterns=list(self.custom_redaction_patterns),
+            custom_redaction_fn=self.custom_redaction_fn,
         )
