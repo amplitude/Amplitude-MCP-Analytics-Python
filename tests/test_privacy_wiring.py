@@ -126,6 +126,13 @@ class TestPrivacyWiring:
         assert props["token"] == "[REDACTED]"
         assert props["image"] == REDACTED_IMAGE_PLACEHOLDER
 
+    def test_emits_when_a_freeform_property_is_a_malformed_bracketed_url(self) -> None:
+        analytics = make_analytics()
+        analytics.track_server_event(resolved_ctx(), "mcp: broken url", {"note": "http://["})
+
+        assert len(analytics.events) == 1
+        assert analytics.events[0]["event_properties"]["note"] == "http://["
+
     def test_redacts_base64_image_content_when_builtin_pii_patterns_are_on(self) -> None:
         analytics = make_analytics()
         analytics.track_server_event(

@@ -36,6 +36,14 @@ class TestIsValidUrl:
         assert is_valid_url("../up") is True
         assert is_valid_url("not a url") is False
 
+    def test_treats_a_malformed_bracketed_url_as_not_a_url(self) -> None:
+        # urlparse raises ValueError. That must not escape redaction.
+        assert is_valid_url("http://[") is False
+        assert is_valid_url("http://[::1") is False
+        assert PrivacyConfig().redact_value("note http://[ for user@x.com") == (
+            "note http://[ for [email]"
+        )
+
 
 class TestIsRawBase64:
     def test_detects_raw_base64_strings(self) -> None:

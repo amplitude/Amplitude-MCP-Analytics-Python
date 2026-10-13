@@ -62,13 +62,20 @@ def is_valid_url(text: str) -> bool:
     """Whether ``text`` is an absolute URL or a relative path.
 
     Stand-in for the Node ``URL`` constructor: an absolute URL needs a scheme
-    and a hostname; anything else counts only when it is a relative path
+    and a hostname; a parse failure (malformed brackets such as ``http://[``)
+    counts as not a URL. Anything else counts only when it is a relative path
     (``/``, ``./``, ``../``). Used so URLs are not mistaken for raw base64.
     @internal
     """
-    parsed = urlparse(text)
-    if parsed.scheme and parsed.hostname:
-        return True
+    # urlparse raises ValueError for malformed bracketed URLs such as
+    # "http://[". Node's URL constructor throws on those too. A parse failure
+    # is "not a URL", not an error that should abort the event.
+    try:
+        parsed = urlparse(text)
+        if parsed.scheme and parsed.hostname:
+            return True
+    except ValueError:
+        pass
     return text.startswith("/") or text.startswith("./") or text.startswith("../")
 
 
