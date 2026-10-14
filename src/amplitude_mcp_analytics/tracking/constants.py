@@ -6,6 +6,9 @@ from __future__ import annotations
 __all__ = [
     "ATTEMPTED_TOOL_NAME_MAX",
     "EVENT_PROPERTY_KEYS",
+    "FEEDBACK_COMMENT_MAX",
+    "FEEDBACK_SUBMITTED",
+    "FEEDBACK_TOOLS_MAX",
     "NO_SESSION",
     "SESSION_ENDED",
     "SESSION_INITIALIZED",
@@ -39,6 +42,16 @@ ATTEMPTED_TOOL_NAME_MAX = 200
 SESSION_INITIALIZED = "[MCP] Session Initialized"
 SESSION_ENDED = "[MCP] Session Ended"
 TOOLS_LISTED = "[MCP] Tools Listed"
+
+#: Opt-in feedback event. Emitted only for a tool registered with
+#: ``register_feedback_tool``, and never paired with ``[MCP] Tool Call Response``.
+FEEDBACK_SUBMITTED = "[MCP] Feedback Submitted"
+
+#: Cap on ``[MCP] Feedback Comment``. Free text the user agreed to share.
+FEEDBACK_COMMENT_MAX = 500
+
+#: Cap on ``[MCP] Feedback Tool Names`` after registry filtering.
+FEEDBACK_TOOLS_MAX = 8
 
 #: Upper bound on ``[MCP] Tool Names`` emitted on ``[MCP] Tools Listed``;
 #: larger lists are truncated to this many names and flagged ``[MCP] Tool
@@ -93,4 +106,11 @@ EVENT_PROPERTY_KEYS: dict[str, str] = {
     "tool_names": "[MCP] Tool Names",
     "tool_names_truncated": "[MCP] Tool Names Truncated",
     "session_duration": "[MCP] Session Duration",
+    # opt-in feedback outcome
+    "feedback_helpful": "[MCP] Feedback Helpful",
+    "feedback_reason": "[MCP] Feedback Reason",
+    "feedback_solicited": "[MCP] Feedback Solicited",
+    "feedback_tool_names": "[MCP] Feedback Tool Names",
+    "feedback_has_comment": "[MCP] Feedback Has Comment",
+    "feedback_comment": "[MCP] Feedback Comment",
 }

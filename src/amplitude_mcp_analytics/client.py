@@ -36,6 +36,10 @@ from .core.delivery import (
     register_exit_hook,
     settle_unflushed_count,
 )
+from .core.feedback_tool import (
+    FeedbackToolDependencies,
+    register_feedback_tool_on_server,
+)
 from .core.identity import ServerIdentity
 from .core.mcp import current_request_context, lookup_registered_tool, unwrap_server
 from .core.run_wrapper import install_run_wrapper
@@ -310,6 +314,77 @@ class AmplitudeMCPAnalytics:
         tool-scope ``ctx``."""
         _track_tool_event(
             self._amplitude, ctx, event_name, properties, self._event_options(options)
+        )
+
+    def feedback_dependencies(self) -> FeedbackToolDependencies:
+        """Dependencies for the opt-in feedback tool, resolved per call the same
+        way :meth:`instrument_tool` resolves the dispatching server. @internal"""
+        return FeedbackToolDependencies(
+            amplitude=self._amplitude,
+            get_server_ctx=lambda: (
+                current.ctx
+                if (current := current_server_scope()) is not None
+                else self._server_ctx
+            ),
+            get_server_identity=lambda: (
+                current.identity
+                if (current := current_server_scope()) is not None
+                else self._server_identity
+            ),
+            get_scope_session_id=lambda: (
+                current.captured_session_id
+                if (current := current_server_scope()) is not None
+                else None
+            ),
+            get_client_info_resolver=lambda: (
+                current.resolve_client_info
+                if (current := current_server_scope()) is not None
+                else self._client_info_resolver
+            ),
+            sanitize_error_message=self.config.sanitize_error_message,
+            privacy=self._privacy,
+            logger=get_logger(),
+        )
+
+    def register_feedback_tool(
+        self,
+        server: Any,
+        *,
+        name: str | None = None,
+        capture_comment: bool = False,
+        description: str | None = None,
+    ) -> Any:
+        """Register an opt-in ``submit_feedback`` tool on a FastMCP server.
+
+        The agent calls it when the user reacts to a result from this server,
+        and the handler emits ``[MCP] Feedback Submitted``.
+        :meth:`instrument_server` does not do this — a server that never calls
+        ``register_feedback_tool`` is unchanged.
+
+        The call does not also emit ``[MCP] Tool Call Response``. It does show
+        up in ``[MCP] Tools Listed``. Requires :meth:`instrument_server` before
+        the server runs for the event to be emitted; without it the tool still
+        answers and a one-time warning is logged.
+
+        On a low-level ``Server``, an invalid ``name``, or a name that is
+        already registered, this warns and returns the same server. It does
+        not raise.
+
+        Example::
+
+            analytics.instrument_server(server)
+            analytics.register_feedback_tool(server)
+            server.run()
+        """
+        options: dict[str, Any] = {}
+        if name is not None:
+            options["name"] = name
+        if capture_comment:
+            options["capture_comment"] = True
+        if description is not None:
+            options["description"] = description
+        return register_feedback_tool_on_server(
+            server, self.feedback_dependencies(), options or None
         )
 
     def instrument_tool(
@@ -766,3 +841,34 @@ class AmplitudeMCPAnalytics:
                 shutdown()
         settle_unflushed_count(self._track_count_since_flush)
         self._track_count_since_flush = 0
+
+
+def create_feedback_tool_handler(
+    analytics: AmplitudeMCPAnalytics,
+    *,
+    name: str | None = None,
+    capture_comment: bool = False,
+    description: str | None = None,
+    server: Any = None,
+) -> Callable[..., Any]:
+    """Build the ``submit_feedback`` callback without registering it.
+
+    Use this when a framework owns tool registration and you pass the callback
+    in yourself. Pass the same ``server`` you register the tool on so ``tools``
+    can be checked against that server's registry.
+
+    Prefer :meth:`AmplitudeMCPAnalytics.register_feedback_tool`, which registers
+    the tool and the callback together.
+    """
+    from .core.feedback_tool import feedback_tool_callback
+
+    options: dict[str, Any] = {}
+    if name is not None:
+        options["name"] = name
+    if capture_comment:
+        options["capture_comment"] = True
+    if description is not None:
+        options["description"] = description
+    if server is not None:
+        options["server"] = server
+    return feedback_tool_callback(analytics.feedback_dependencies(), options or None)

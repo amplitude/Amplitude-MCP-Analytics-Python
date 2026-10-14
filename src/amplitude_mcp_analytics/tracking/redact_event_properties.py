@@ -3,7 +3,8 @@
 Dimension keys (everything in :data:`EVENT_PROPERTY_KEYS` except rationale
 and error message) pass through unchanged so attribution stays intact.
 Every other value — ``extra``, caller properties, ``[MCP] Rationale``,
-``[MCP] Error Message``, and ``[MCP] Param:`` derived strings — is redacted.
+``[MCP] Error Message``, ``[MCP] Feedback Comment``, and ``[MCP] Param:``
+derived strings — is redacted.
 
 @internal
 """
@@ -47,6 +48,7 @@ _FREE_TEXT_RESERVED = frozenset(
     {
         EVENT_PROPERTY_KEYS["rationale"],
         EVENT_PROPERTY_KEYS["error_message"],
+        EVENT_PROPERTY_KEYS["feedback_comment"],
     }
 )
 

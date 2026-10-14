@@ -120,6 +120,7 @@ Once a server is bound and its tools wrapped, the SDK emits these automatically:
 | `[MCP] Tools Listed` | A `tools/list` request | `[MCP] Tool Count`, `[MCP] Tool Names` (capped), `[MCP] Response Duration`, `[MCP] Response Size` |
 | `[MCP] Tool Call Response` | Every instrumented tool call | `[MCP] Is Error`, `[MCP] Error Message`/`[MCP] Error Code`/`[MCP] Error Type`/`[MCP] Error HTTP Status`, `[MCP] Response Duration`, `[MCP] Request Size`, `[MCP] Response Size`, `[MCP] Rationale` (opt-in, see below) |
 | `[MCP] Tool Call Rejected` | A `tools/call` request that fails before any tool callback runs (unknown tool, input-schema validation) | `[MCP] Attempted Tool Name` (unvalidated input — kept off `[MCP] Tool Name`), `[MCP] Rejection Reason` (`unknown_tool`/`disabled_tool`/`schema_validation`/`unrecognized`), `[MCP] Error Message`, `[MCP] Response Duration`, `[MCP] Response Size`, `[MCP] Response HTTP Status` |
+| `[MCP] Feedback Submitted` | A call to the opt-in `submit_feedback` tool (see below) | `[MCP] Feedback Helpful`, `[MCP] Feedback Reason`, `[MCP] Feedback Solicited`, `[MCP] Feedback Tool Names`, `[MCP] Feedback Has Comment`. Not gated by `autocapture` |
 
 All event names and properties are prefixed `[MCP] ` so they never collide with
 same-named events/properties from other Amplitude SDKs on the same project.
@@ -255,6 +256,64 @@ free text, so emitting it is an explicit opt-in, and where it lives is your
 convention. Callable at any depth inside an instrumented handler (like
 `set_identity`); truncated to 1000 characters; last write wins. Omitted
 entirely when never set.
+
+## Feedback
+
+`register_feedback_tool(server)` adds a `submit_feedback` tool to a FastMCP
+server. The agent calls it when the user reacts to a result from this server
+("thanks, that's it", "that's wrong") or asks to give feedback, and the SDK
+emits `[MCP] Feedback Submitted`. `instrument_server` does not add the tool.
+A server that never opts in is unchanged.
+
+```python
+analytics.instrument_server(server)
+analytics.register_feedback_tool(server)
+
+server.run()
+```
+
+The tool description is what tells the agent when to call it. The result text
+tells it not to ask again in the same conversation unless the user brings
+feedback up. The call does not also emit `[MCP] Tool Call Response`.
+
+`helpful` is a boolean. `reason`, when the user gave one, is one of
+`wrong_result`, `incomplete`, `too_slow`, `wrong_tool`, `missing_capability`,
+or `other`. An optional `tools` list is kept only for names registered on that
+server. `solicited` records whether the agent asked or the user volunteered.
+
+Free-text `comment` is off by default, and the field is then absent from the
+schema. Opt in to emit `[MCP] Feedback Comment`, capped at 500 characters and
+passed through `sanitize_error_message` and the same built-in PII redaction as
+`[MCP] Error Message`:
+
+```python
+analytics.register_feedback_tool(server, capture_comment=True)
+```
+
+A name that is already registered is left alone. Pass `name` to register
+alongside an existing tool of the same name. On a low-level `Server` (no
+`add_tool`) this warns and does nothing.
+
+The event follows the same anonymous-floor rule as every other event: a call
+with no identity, no tenant, and no correlation anchor is dropped unless
+`emit_anonymous_event` is on.
+
+To name the tool in the server's own instructions (those are fixed when the
+server is constructed), append `FEEDBACK_TOOL_INSTRUCTIONS`:
+
+```python
+from amplitude_mcp_analytics import FEEDBACK_TOOL_INSTRUCTIONS
+
+mcp = FastMCP(
+    "my-mcp-server",
+    instructions=f"Your instructions.\n\n{FEEDBACK_TOOL_INSTRUCTIONS}",
+)
+```
+
+`feedback_tool_instructions(name)` is the same paragraph for a renamed tool.
+`create_feedback_tool_handler(analytics)` is the callback on its own, for a
+framework that registers tools itself. Pass `server` so `tools` can be checked
+against that server's registry.
 
 ## Tool parameter capture
 

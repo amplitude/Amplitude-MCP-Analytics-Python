@@ -7,7 +7,7 @@ Public surface (semver-governed; guarded by ``tests/test_smoke.py``). See
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
-from .client import AmplitudeMCPAnalytics
+from .client import AmplitudeMCPAnalytics, create_feedback_tool_handler
 from .config import (
     DEFAULT_PARAM_NEVER_KEYS,
     AutocaptureConfig,
@@ -43,6 +43,20 @@ from .context import (
     run_with_context,
     set_identity,
     set_rationale,
+)
+from .core.feedback_tool import (
+    FEEDBACK_REASONS,
+    FEEDBACK_TOOL_DEFINITION,
+    FEEDBACK_TOOL_INSTRUCTIONS,
+    FEEDBACK_TOOL_NAME,
+    FeedbackInputJsonSchema,
+    FeedbackJsonSchemaProperty,
+    FeedbackReason,
+    FeedbackToolAnnotations,
+    FeedbackToolDefinition,
+    RegisterFeedbackToolOptions,
+    feedback_tool_definition,
+    feedback_tool_instructions,
 )
 from .errors import (
     McpToolError,
@@ -88,6 +102,15 @@ __all__ = [
     "DefaultServerFields",
     "DefaultToolFields",
     "ErrorMessageSanitizer",
+    "FEEDBACK_REASONS",
+    "FEEDBACK_TOOL_DEFINITION",
+    "FEEDBACK_TOOL_INSTRUCTIONS",
+    "FEEDBACK_TOOL_NAME",
+    "FeedbackInputJsonSchema",
+    "FeedbackJsonSchemaProperty",
+    "FeedbackReason",
+    "FeedbackToolAnnotations",
+    "FeedbackToolDefinition",
     "IdentityResolvedFrom",
     "IdentityResolver",
     "MCPAnalyticsConfig",
@@ -108,6 +131,7 @@ __all__ = [
     "ParamCaptureConfig",
     "RationaleSanitizer",
     "ResolvedAutocapture",
+    "RegisterFeedbackToolOptions",
     "ResolvedParamCapture",
     "ResolveClientInfoInput",
     "SetIdentityInput",
@@ -116,8 +140,11 @@ __all__ = [
     "__version__",
     "build_tool_error",
     "classify_error",
+    "create_feedback_tool_handler",
     "create_server_context",
     "create_tool_context",
+    "feedback_tool_definition",
+    "feedback_tool_instructions",
     "ctx_to_amplitude_fields",
     "ctx_to_amplitude_fields_for_tool",
     "get_current_context",
