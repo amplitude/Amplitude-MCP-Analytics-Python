@@ -21,7 +21,10 @@ from amplitude_mcp_analytics.context.types import (
     McpToolMeta,
 )
 from amplitude_mcp_analytics.core.privacy import REDACTED_IMAGE_PLACEHOLDER
+from amplitude_mcp_analytics.exceptions import ConfigurationError
 from amplitude_mcp_analytics.testing import MockAmplitudeMCPAnalytics
+from amplitude_mcp_analytics.tracking.track import track_server_event
+from amplitude_mcp_analytics.tracking.types import TrackEventOptions
 from amplitude_mcp_analytics.types import AmplitudeEvent
 
 pytestmark = pytest.mark.anyio
@@ -141,6 +144,52 @@ class TestPrivacyWiring:
             {"image": f"data:image/png;base64,{PNG_BASE64}"},
         )
         assert analytics.events[0]["event_properties"]["image"] == REDACTED_IMAGE_PLACEHOLDER
+
+    def test_client_methods_ignore_per_call_redaction_fields(self) -> None:
+        analytics = make_analytics()
+        analytics.track_server_event(
+            resolved_ctx(),
+            "mcp: client wins",
+            {"note": "user@x.com"},
+            TrackEventOptions(redact_pii=False),
+        )
+        assert analytics.events[0]["event_properties"]["note"] == "[email]"
+
+
+class _CapturingClient:
+    def __init__(self) -> None:
+        self.tracked: list[dict[str, Any]] = []
+
+    def track(self, event: dict[str, Any]) -> None:
+        self.tracked.append(event)
+
+    def flush(self) -> None:
+        return None
+
+
+class TestStandaloneRedactionOptions:
+    def test_honors_redact_pii_false_on_the_module_function(self) -> None:
+        client = _CapturingClient()
+        track_server_event(
+            client,
+            resolved_ctx(),
+            "mcp: raw",
+            {"note": "user@x.com"},
+            TrackEventOptions(redact_pii=False),
+        )
+        assert client.tracked[0]["event_properties"]["note"] == "user@x.com"
+
+    def test_raises_on_an_invalid_pattern_instead_of_dropping_the_event(self) -> None:
+        client = _CapturingClient()
+        with pytest.raises(ConfigurationError, match="not a valid regular expression"):
+            track_server_event(
+                client,
+                resolved_ctx(),
+                "mcp: bad",
+                {"note": "user@x.com"},
+                TrackEventOptions(custom_redaction_patterns=["("]),
+            )
+        assert client.tracked == []
 
 
 class TestSanitizeRunsBeforeRedaction:

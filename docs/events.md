@@ -601,6 +601,11 @@ events with the same treatment as the defaults:
   `[MCP] ` prefix, which is reserved for SDK-emitted names and properties.
 - Pass `TrackEventOptions(drop_extra_props=True)` to omit the `extra` bags from
   one event.
+- The client methods use the redaction policy from `MCPAnalyticsConfig`. The
+  module-level `track_server_event` / `track_tool_event` functions also accept
+  `redact_pii`, `custom_redaction_patterns`, and `custom_redaction_fn` on
+  `TrackEventOptions`. An invalid pattern raises `ConfigurationError` from the
+  call.
 
 ### Property precedence
 

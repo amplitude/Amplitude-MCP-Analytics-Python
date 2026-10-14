@@ -76,18 +76,13 @@ _CREDIT_CARD_RE = re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b")
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _SSN_SPACE_RE = re.compile(r"\b\d{3} \d{2} \d{4}\b")
 _IPV4_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
-# Bare "::" is omitted; free-standing "::" abbreviations require whitespace
-# or start-of-string to avoid false positives on scope-resolution operators
-# (C++ std::vector, Ruby ::Module, Python a[::2]). Bracket-enclosed forms
-# preceded by "//" are URL-context IPv6 (RFC 2732, e.g. http://[::1]:8080).
-_IPV6_RE = re.compile(
-    r"(?:(?<=//)\[::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\]"
-    r"|(?<=//)\[::1\]"
-    r"|\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b"
-    r"|\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b"
-    r"|(?<![^\s])::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b"
-    r"|(?<![^\s])::1\b)"
-)
+# URL-bracket form first so `http://[::1]:8080` keeps a single pair of
+# brackets. A bare candidate is everything else made of hex and colons.
+# `::` compression is validated separately so `2001:db8::` and
+# `2001:db8::1:2` are replaced in full, while `std::vector` and `a[::2]` stay.
+_IPV6_CANDIDATE_RE = re.compile(r"//\[[0-9a-fA-F:]+\]|[0-9a-fA-F:]{2,}")
+_HEX_GROUP_RE = re.compile(r"^[0-9a-fA-F]{1,4}$")
+_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9_]")
 # 7–15 digits total (`[1-9]` plus 6–14 more), with spaces, dots, dashes, or
 # parentheses between digits. An uninterrupted `+14155552671` still matches.
 _INTL_PHONE_RE = re.compile(
@@ -98,6 +93,10 @@ _INTL_PHONE_RE = re.compile(
 _BASE64_DATA_URL_RE = re.compile(r"^data:[^;,]*(?:;[^;,]+)*?;base64,")
 _RAW_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+=*$")
 _BASE64_ALPHABET_MARK = re.compile(r"[+/=]")
+# JPEG base64 starts with `/9j/`. `is_valid_url` treats every leading `/` as a
+# relative path, which would hide that payload from image redaction. PNG, GIF,
+# and WebP prefixes are included so the same exemption cannot hide them.
+_IMAGE_BASE64_PREFIXES = ("/9j/", "iVBORw0KGgo", "R0lGOD", "UklGR")
 
 
 def is_base64_data_url(text: str) -> bool:
@@ -133,9 +132,12 @@ def is_raw_base64(text: str) -> bool:
     contains ``+``, ``/``, or ``=``. Requiring one of those keeps
     identifier-style strings that happen to use a subset of the base64
     alphabet — ULIDs, hex tokens, UUIDs without dashes — from being
-    mis-redacted as base64 images. @internal
+    mis-redacted as base64 images. A known image prefix is checked before the
+    relative-path exemption, so a JPEG (`/9j/...`) is not mistaken for a path.
+    @internal
     """
-    if is_valid_url(text):
+    image_payload = text.startswith(_IMAGE_BASE64_PREFIXES)
+    if not image_payload and is_valid_url(text):
         return False
     if len(text) <= 20 or len(text) % 4 != 0:
         return False
@@ -182,8 +184,58 @@ def redact_pii_patterns(text: Any) -> Any:
     result = _SSN_RE.sub("[ssn]", result)
     result = _SSN_SPACE_RE.sub("[ssn]", result)
     result = _IPV4_RE.sub("[ip_address]", result)
-    result = _IPV6_RE.sub("[ip_address]", result)
+    result = _redact_ipv6(result)
     return result
+
+
+def _hex_groups(side: str) -> list[str] | None:
+    if side == "":
+        return []
+    groups = side.split(":")
+    if all(_HEX_GROUP_RE.fullmatch(group) for group in groups):
+        return groups
+    return None
+
+
+def _is_ipv6_address(token: str) -> bool:
+    """A full 8-group address, or one ``::`` compression standing in for the rest."""
+    if ":" not in token or token == "::" or ":::" in token:
+        return False
+    halves = token.split("::")
+    if len(halves) > 2:
+        return False
+    if len(halves) == 1:
+        groups = _hex_groups(token)
+        return groups is not None and len(groups) == 8
+    left = _hex_groups(halves[0])
+    right = _hex_groups(halves[1])
+    # `::` replaces at least one group, so the explicit groups are at most 7.
+    return left is not None and right is not None and len(left) + len(right) <= 7
+
+
+def _is_free_standing_ipv6(text: str, offset: int) -> bool:
+    """Colon-leading forms (`::1`) must be free-standing.
+
+    A letter or ``[`` before them is a scope operator (`std::vector`,
+    ``a[::2]``), not an address. Hex-leading forms must not continue an
+    identifier. The word check is ASCII, matching Node's non-unicode ``\\w``.
+    """
+    before = text[offset - 1] if offset > 0 else ""
+    if text[offset] == ":":
+        return before == "" or before.isspace()
+    return before == "" or _ASCII_WORD_RE.fullmatch(before) is None
+
+
+def _redact_ipv6(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.startswith("//["):
+            return "//[ip_address]" if _is_ipv6_address(token[3:-1]) else token
+        if not _is_ipv6_address(token) or not _is_free_standing_ipv6(text, match.start()):
+            return token
+        return "[ip_address]"
+
+    return _IPV6_CANDIDATE_RE.sub(replace, text)
 
 
 class PrivacyConfig:
@@ -231,6 +283,11 @@ class PrivacyConfig:
         through unchanged. Object keys are not rewritten.
         """
         if isinstance(value, str):
+            # Replace an image before text rules can punch holes in the payload
+            # (`AAA` inside a PNG would otherwise survive as mixed text). Check
+            # again afterwards in case a custom rule rewrote a value into one.
+            if is_base64_data_url(value) or is_raw_base64(value):
+                return REDACTED_IMAGE_PLACEHOLDER
             return redact_base64_content(self.redact_text(value))
 
         if isinstance(value, dict):
@@ -253,9 +310,12 @@ class PrivacyConfig:
         for regex, replacement in self._compiled:
             try:
                 result = regex.sub(replacement, result)
-            except re.error as exc:
+            except (re.error, IndexError) as exc:
+                # The pattern source can be the literal the rule exists to hide,
+                # and a bad replacement (`\g<missing>`) raises IndexError rather
+                # than re.error. Log the type only.
                 self._warn_custom_redaction_failure(
-                    f"custom_redaction_patterns /{regex.pattern}/ failed ({type(exc).__name__})"
+                    f"custom_redaction_patterns failed ({type(exc).__name__})"
                 )
                 return REDACTED_CONTENT_PLACEHOLDER
         return result

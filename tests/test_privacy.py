@@ -72,6 +72,9 @@ class TestRedactBase64Content:
     def test_redacts_base64_data_urls_and_raw_base64_images(self) -> None:
         assert redact_base64_content("data:image/png;base64,iVBOR") == REDACTED_IMAGE_PLACEHOLDER
         assert redact_base64_content(PNG_BASE64) == REDACTED_IMAGE_PLACEHOLDER
+        jpeg = f"/9j/{'A' * 18}=="
+        assert redact_base64_content(jpeg) == REDACTED_IMAGE_PLACEHOLDER
+        assert redact_base64_content("/images/photo.jpg") == "/images/photo.jpg"
         assert (
             redact_base64_content("data:image/png;charset=utf-8;base64,AAA=")
             == REDACTED_IMAGE_PLACEHOLDER
@@ -100,6 +103,10 @@ class TestRedactPiiPatterns:
         assert redact_pii_patterns("loopback ::1") == "loopback [ip_address]"
         assert redact_pii_patterns("see http://[::1]:8080/health") == (
             "see http://[ip_address]:8080/health"
+        )
+        assert redact_pii_patterns("addr 2001:db8:: is trailing") == "addr [ip_address] is trailing"
+        assert redact_pii_patterns("addr 2001:db8::1:2 is compressed") == (
+            "addr [ip_address] is compressed"
         )
 
     def test_does_not_treat_scope_resolution_operators_as_ipv6(self) -> None:
@@ -149,6 +156,25 @@ class TestPrivacyConfig:
             "list": ["[email]", 1],
             "pair": ("[email]", 2),
         }
+
+    def test_replaces_an_image_before_custom_patterns_can_split_it(self) -> None:
+        privacy = PrivacyConfig(custom_redaction_patterns=["AAA"])
+        assert privacy.redact_value(PNG_BASE64) == REDACTED_IMAGE_PLACEHOLDER
+
+    def test_replaces_text_when_a_custom_replacement_is_an_unknown_group(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.ERROR, logger="amplitude_mcp_analytics")
+        privacy = PrivacyConfig(
+            redact_pii=False,
+            custom_redaction_patterns=[
+                {"pattern": "(secret@example.com)", "replacement": r"\g<missing>"}
+            ],
+        )
+        assert privacy.redact_text("secret@example.com") == REDACTED_CONTENT_PLACEHOLDER
+        message = caplog.records[0].getMessage()
+        assert "IndexError" in message
+        assert "secret@example.com" not in message
 
     def test_replaces_a_value_that_is_entirely_a_base64_image(self) -> None:
         privacy = PrivacyConfig(redact_pii=False)

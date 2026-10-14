@@ -24,19 +24,10 @@ from .ctx_to_properties import (
     reserved_fields_to_properties,
     should_emit,
 )
-from .redact_event_properties import redact_freeform_properties
+from .redact_event_properties import redact_freeform_properties, resolve_event_privacy
 from .types import AmplitudeFields, TrackEventOptions
 
-#: Built-in PII patterns, used when a caller does not pass a resolved policy.
-_DEFAULT_PRIVACY = PrivacyConfig()
-
 __all__ = ["track_server_event", "track_tool_event"]
-
-
-def _privacy_for(options: TrackEventOptions | None) -> PrivacyConfig:
-    if options is not None and options.privacy is not None:
-        return options.privacy
-    return _DEFAULT_PRIVACY
 
 
 def _emit(
@@ -45,6 +36,7 @@ def _emit(
     event_name: str,
     properties: dict[str, Any] | None,
     options: TrackEventOptions | None,
+    privacy: PrivacyConfig,
 ) -> None:
     merged = {
         **reserved_fields_to_properties(fields.event_properties),
@@ -53,7 +45,7 @@ def _emit(
     }
     event: AmplitudeEvent = {
         "event_type": event_name,
-        "event_properties": redact_freeform_properties(merged, _privacy_for(options)),
+        "event_properties": redact_freeform_properties(merged, privacy),
     }
     if fields.user_id is not None:
         event["user_id"] = fields.user_id
@@ -75,11 +67,24 @@ def track_server_event(
     properties. Property precedence (last wins): reserved < ``ctx.extra`` <
     caller ``properties``. Free-form strings in the merged bag are redacted
     before delivery; reserved dimension fields are not. Drops silently under
-    the identity/tenant skip rule and on client error (best-effort)."""
+    the identity/tenant skip rule and on client error (best-effort).
+
+    Standalone redaction fields on ``options`` are compiled before that
+    best-effort boundary: an invalid pattern or a non-callable
+    ``custom_redaction_fn`` raises ``ConfigurationError``.
+    """
+    privacy = resolve_event_privacy(options)
     if not should_emit(ctx):
         return
     try:
-        _emit(amplitude, ctx_to_amplitude_fields(ctx), event_name, properties, options)
+        _emit(
+            amplitude,
+            ctx_to_amplitude_fields(ctx),
+            event_name,
+            properties,
+            options,
+            privacy,
+        )
     except Exception as err:  # noqa: BLE001 — best-effort telemetry, never raises
         get_logger().warning(
             "track_server_event('%s') failed: %s", event_name, err
@@ -95,10 +100,18 @@ def track_tool_event(
 ) -> None:
     """Emit a tool-scope custom event — same contract as
     :func:`track_server_event` plus the tool metadata and ``extra``."""
+    privacy = resolve_event_privacy(options)
     if not should_emit(ctx):
         return
     try:
-        _emit(amplitude, ctx_to_amplitude_fields_for_tool(ctx), event_name, properties, options)
+        _emit(
+            amplitude,
+            ctx_to_amplitude_fields_for_tool(ctx),
+            event_name,
+            properties,
+            options,
+            privacy,
+        )
     except Exception as err:  # noqa: BLE001 — best-effort telemetry, never raises
         get_logger().warning(
             "track_tool_event('%s') failed: %s", event_name, err

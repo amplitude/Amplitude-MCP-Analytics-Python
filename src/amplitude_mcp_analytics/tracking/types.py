@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,14 +34,36 @@ class AmplitudeFields:
 
 @dataclass(frozen=True)
 class TrackEventOptions:
-    """Options for ``track_server_event`` / ``track_tool_event``."""
+    """Options for ``track_server_event`` / ``track_tool_event``.
+
+    ``redact_pii``, ``custom_redaction_patterns``, and ``custom_redaction_fn``
+    apply to the module-level functions. ``AmplitudeMCPAnalytics`` methods
+    ignore them and use the client's ``MCPAnalyticsConfig``.
+    """
 
     drop_extra_props: bool = False
     """Omit the ctx ``extra`` (and ``tool.extra``) bags from the event."""
-    privacy: PrivacyConfig | None = None
-    """Redaction policy for free-form event content. Supplied by the client
-    from ``MCPAnalyticsConfig``; when omitted, built-in PII patterns still run.
+    redact_pii: bool | None = None
+    """Built-in PII patterns for this standalone call. ``None`` leaves them on.
 
-    @internal Not part of the supported caller API. Configure redaction on
-    ``MCPAnalyticsConfig`` instead of passing a policy here.
+    Ignored when ``privacy`` is set, which is how the client threads its config.
+    """
+    custom_redaction_patterns: Sequence[str | Mapping[str, str]] | None = None
+    """Extra redaction rules for this standalone call, after the built-in patterns.
+
+    Same validation as ``MCPAnalyticsConfig``: an invalid entry raises
+    ``ConfigurationError`` from the call. Ignored when ``privacy`` is set.
+    """
+    custom_redaction_fn: Callable[[str], str] | None = None
+    """Final redaction pass for this standalone call.
+
+    A throw or a non-string return replaces that value with
+    ``[content redacted]``. Ignored when ``privacy`` is set.
+    """
+    privacy: PrivacyConfig | None = None
+    """Resolved redaction policy. Supplied by the client from
+    ``MCPAnalyticsConfig``. When set, the public redaction fields on this
+    options object are ignored.
+
+    @internal Not part of the supported caller API.
     """

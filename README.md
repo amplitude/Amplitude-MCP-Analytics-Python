@@ -485,10 +485,15 @@ analytics = AmplitudeMCPAnalytics(
 already redact upstream). Custom patterns, `custom_redaction_fn`, and
 base64-image replacement still run. A `custom_redaction_fn` that raises or
 returns a non-string replaces that value with `[content redacted]`. The
-failure is logged once for the config, and the log names the failure kind
-rather than the input. An invalid `custom_redaction_patterns` entry, or a
-`custom_redaction_fn` that is not a function, raises `ConfigurationError`
+failure is logged once, and the log names the failure kind rather than the
+input or the custom pattern. An invalid `custom_redaction_patterns` entry, or
+a `custom_redaction_fn` that is not a function, raises `ConfigurationError`
 when the config is constructed.
+
+`AmplitudeMCPAnalytics.track_server_event` and `track_tool_event` always use
+that config. The module-level functions of the same names take the same three
+fields on `TrackEventOptions` for one call. An invalid entry there raises
+`ConfigurationError` from the call instead of dropping the event.
 
 ## Context (`ctx`)
 
