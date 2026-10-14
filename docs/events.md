@@ -508,7 +508,7 @@ in the conversation unless the user raises it.
 | `[MCP] Feedback Solicited` | boolean | when the agent sent a boolean | `true` when the agent asked, `false` when the user volunteered it. Omitted rather than guessed |
 | `[MCP] Feedback Tool Names` | string[] | when at least one name matched the server's registry | Up to 8 names, deduplicated, in the order given. Names that are not registered on that server are dropped. Omitted entirely when the registry cannot be read |
 | `[MCP] Feedback Has Comment` | boolean | always | `true` when comment capture is on and the user supplied a non-empty comment, including when redaction then drops the text |
-| `[MCP] Feedback Comment` | string | when comment capture is on and the text survived redaction | Capped at 500 characters, then passed through [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction). Absent when `capture_comment` is left at its default `False` |
+| `[MCP] Feedback Comment` | string | when comment capture is on and the text survived redaction | Capped at 500 characters before and after [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction), so a replacement that lengthens the text is still at most 500 characters. Absent when `capture_comment` is left at its default `False` |
 
 `comment` is off by default, and the field is then absent from the tool schema
 so the agent is not asked for free text. Turn it on with

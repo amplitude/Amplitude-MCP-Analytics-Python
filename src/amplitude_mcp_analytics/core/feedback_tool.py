@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from ..config import ErrorMessageSanitizer
-from ..context.types import ClientInfoResolver, McpServerContext, McpToolMeta
+from ..context.types import (
+    ClientInfoResolver,
+    IdentityResolver,
+    McpServerContext,
+    McpToolMeta,
+)
 from ..context.vars import run_with_context
 from ..core.privacy import PrivacyConfig
 from ..tracking.constants import FEEDBACK_COMMENT_MAX, FEEDBACK_TOOLS_MAX
@@ -196,6 +201,7 @@ class FeedbackToolDependencies:
     get_server_ctx: Callable[[], McpServerContext | None]
     get_server_identity: Callable[[], ServerIdentity | None]
     get_client_info_resolver: Callable[[], ClientInfoResolver | None]
+    get_identity_resolver: Callable[[], IdentityResolver | None] | None = None
     get_scope_session_id: Callable[[], str | None] | None = None
     sanitize_error_message: ErrorMessageSanitizer | None = None
     privacy: PrivacyConfig | None = None
@@ -466,11 +472,15 @@ def create_feedback_handler(
             return result
 
         try:
+            identity_resolver = deps.get_identity_resolver
             ctx = build_tool_context(
                 server_ctx,
                 McpToolMeta(name=tool.name),
                 scope_session_id=(
                     deps.get_scope_session_id() if deps.get_scope_session_id is not None else None
+                ),
+                resolve_identity=(
+                    identity_resolver() if identity_resolver is not None else None
                 ),
                 resolve_client_info=deps.get_client_info_resolver(),
                 server_identity=deps.get_server_identity(),
@@ -516,81 +526,80 @@ def _text_or_raise(outcome: dict[str, Any]) -> str:
     return FEEDBACK_RECORDED_TEXT
 
 
-def _compile_callback(source: str, handler: Callable[[Any], dict[str, Any]]) -> Callable[..., Any]:
-    """Build the tool function outside this module's postponed annotations.
+def _schema_annotations(*, capture_comment: bool) -> dict[str, Any]:
+    """Concrete annotations FastMCP can inspect.
 
-    ``from __future__ import annotations`` would leave ``Annotated`` and
-    ``Field`` as strings FastMCP cannot resolve. ``exec`` evaluates them.
+    This module uses postponed annotations, so a normal signature would store
+    ``Annotated`` and ``Field`` as strings. Assigning the evaluated objects
+    onto ``__annotations__`` is what ``inspect.signature(..., eval_str=True)``
+    reads; string values are the only ones it evaluates.
     """
     from typing import Annotated
 
     from pydantic import Field
 
-    namespace: dict[str, Any] = {
-        "Annotated": Annotated,
-        "Field": Field,
-        "FeedbackReason": FeedbackReason,
-        "FEEDBACK_COMMENT_MAX": FEEDBACK_COMMENT_MAX,
-        "FEEDBACK_TOOLS_MAX": FEEDBACK_TOOLS_MAX,
-        "_HELPFUL_DESCRIPTION": _HELPFUL_DESCRIPTION,
-        "_REASON_DESCRIPTION": _REASON_DESCRIPTION,
-        "_COMMENT_DESCRIPTION": _COMMENT_DESCRIPTION,
-        "_TOOLS_DESCRIPTION": _TOOLS_DESCRIPTION,
-        "_SOLICITED_DESCRIPTION": _SOLICITED_DESCRIPTION,
-        "_text_or_raise": _text_or_raise,
-        "handler": handler,
+    annotations: dict[str, Any] = {
+        "helpful": Annotated[bool, Field(description=_HELPFUL_DESCRIPTION)],
+        "reason": Annotated[FeedbackReason | None, Field(description=_REASON_DESCRIPTION)],
+        "tools": Annotated[
+            list[str] | None,
+            Field(description=_TOOLS_DESCRIPTION, max_length=FEEDBACK_TOOLS_MAX),
+        ],
+        "solicited": Annotated[bool | None, Field(description=_SOLICITED_DESCRIPTION)],
+        "return": str,
     }
-    exec(source, namespace)  # noqa: S102 — the source is a literal in this module
-    callback = namespace["submit_feedback"]
-    callback.__module__ = __name__
-    return callback
-
-
-_CALLBACK_WITH_COMMENT = """
-async def submit_feedback(
-    helpful: Annotated[bool, Field(description=_HELPFUL_DESCRIPTION)],
-    reason: Annotated[FeedbackReason | None, Field(description=_REASON_DESCRIPTION)] = None,
-    comment: Annotated[
-        str | None, Field(description=_COMMENT_DESCRIPTION, max_length=FEEDBACK_COMMENT_MAX)
-    ] = None,
-    tools: Annotated[
-        list[str] | None, Field(description=_TOOLS_DESCRIPTION, max_length=FEEDBACK_TOOLS_MAX)
-    ] = None,
-    solicited: Annotated[bool | None, Field(description=_SOLICITED_DESCRIPTION)] = None,
-) -> str:
-    return _text_or_raise(handler({
-        "helpful": helpful,
-        "reason": reason,
-        "comment": comment,
-        "tools": tools,
-        "solicited": solicited,
-    }))
-"""
-
-_CALLBACK_WITHOUT_COMMENT = """
-async def submit_feedback(
-    helpful: Annotated[bool, Field(description=_HELPFUL_DESCRIPTION)],
-    reason: Annotated[FeedbackReason | None, Field(description=_REASON_DESCRIPTION)] = None,
-    tools: Annotated[
-        list[str] | None, Field(description=_TOOLS_DESCRIPTION, max_length=FEEDBACK_TOOLS_MAX)
-    ] = None,
-    solicited: Annotated[bool | None, Field(description=_SOLICITED_DESCRIPTION)] = None,
-) -> str:
-    return _text_or_raise(handler({
-        "helpful": helpful,
-        "reason": reason,
-        "tools": tools,
-        "solicited": solicited,
-    }))
-"""
+    if capture_comment:
+        annotations["comment"] = Annotated[
+            str | None,
+            Field(description=_COMMENT_DESCRIPTION, max_length=FEEDBACK_COMMENT_MAX),
+        ]
+    return annotations
 
 
 def _callback_with_comment(handler: Callable[[Any], dict[str, Any]]) -> Callable[..., Any]:
-    return _compile_callback(_CALLBACK_WITH_COMMENT, handler)
+    async def submit_feedback(
+        helpful: bool,
+        reason: FeedbackReason | None = None,
+        comment: str | None = None,
+        tools: list[str] | None = None,
+        solicited: bool | None = None,
+    ) -> str:
+        return _text_or_raise(
+            handler(
+                {
+                    "helpful": helpful,
+                    "reason": reason,
+                    "comment": comment,
+                    "tools": tools,
+                    "solicited": solicited,
+                }
+            )
+        )
+
+    submit_feedback.__annotations__ = _schema_annotations(capture_comment=True)
+    return submit_feedback
 
 
 def _callback_without_comment(handler: Callable[[Any], dict[str, Any]]) -> Callable[..., Any]:
-    return _compile_callback(_CALLBACK_WITHOUT_COMMENT, handler)
+    async def submit_feedback(
+        helpful: bool,
+        reason: FeedbackReason | None = None,
+        tools: list[str] | None = None,
+        solicited: bool | None = None,
+    ) -> str:
+        return _text_or_raise(
+            handler(
+                {
+                    "helpful": helpful,
+                    "reason": reason,
+                    "tools": tools,
+                    "solicited": solicited,
+                }
+            )
+        )
+
+    submit_feedback.__annotations__ = _schema_annotations(capture_comment=False)
+    return submit_feedback
 
 
 def _fastmcp_callback(
@@ -611,10 +620,16 @@ def feedback_tool_callback(
     """FastMCP-compatible callback for the resolved tool. @internal"""
     resolved = resolve_feedback_tool(options) or resolve_feedback_tool()
     assert resolved is not None
-    return _fastmcp_callback(
+    callback = _fastmcp_callback(
         create_feedback_handler(deps, options),
         capture_comment=resolved.capture_comment,
     )
+    # Frameworks that register from the callable itself (rather than the
+    # name and description ``register_feedback_tool`` passes to ``add_tool``)
+    # should advertise the same tool the event emits.
+    callback.__name__ = resolved.name
+    callback.__doc__ = resolved.description
+    return callback
 
 
 def _as_fastmcp(server: Any) -> Any | None:

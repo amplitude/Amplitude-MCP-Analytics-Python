@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.privacy import PrivacyConfig
-from .constants import EVENT_PROPERTY_KEYS
+from .constants import EVENT_PROPERTY_KEYS, FEEDBACK_COMMENT_MAX
 from .types import TrackEventOptions
 
 #: Built-in PII patterns, used when a caller does not pass a policy.
@@ -44,11 +44,13 @@ def resolve_event_privacy(options: TrackEventOptions | None) -> PrivacyConfig:
         custom_redaction_fn=options.custom_redaction_fn,
     )
 
+_FEEDBACK_COMMENT_KEY = EVENT_PROPERTY_KEYS["feedback_comment"]
+
 _FREE_TEXT_RESERVED = frozenset(
     {
         EVENT_PROPERTY_KEYS["rationale"],
         EVENT_PROPERTY_KEYS["error_message"],
-        EVENT_PROPERTY_KEYS["feedback_comment"],
+        _FEEDBACK_COMMENT_KEY,
     }
 )
 
@@ -65,7 +67,19 @@ def redact_freeform_properties(
 
     @internal
     """
-    return {
-        key: value if key in _DIMENSION_KEYS else privacy.redact_value(value)
-        for key, value in properties.items()
-    }
+    redacted: dict[str, Any] = {}
+    for key, value in properties.items():
+        if key in _DIMENSION_KEYS:
+            redacted[key] = value
+            continue
+        cleaned = privacy.redact_value(value)
+        # A custom replacement can grow the comment past the input cap. Slice
+        # once, after redaction, so the emitted value stays within 500 characters.
+        if (
+            key == _FEEDBACK_COMMENT_KEY
+            and isinstance(cleaned, str)
+            and len(cleaned) > FEEDBACK_COMMENT_MAX
+        ):
+            cleaned = cleaned[:FEEDBACK_COMMENT_MAX]
+        redacted[key] = cleaned
+    return redacted

@@ -49,8 +49,10 @@ def _handler(
     *,
     transport: str = "streamable-http",
     identity: ServerIdentity | None = None,
+    identity_resolver=None,
     emit_anonymous_event: bool | None = None,
     sanitize=None,
+    privacy=None,
     logger=None,
     server=None,
     capture_comment: bool = False,
@@ -73,7 +75,9 @@ def _handler(
             get_server_ctx=lambda: ctx,
             get_server_identity=lambda: identity,
             get_client_info_resolver=lambda: None,
+            get_identity_resolver=None if identity_resolver is None else lambda: identity_resolver,
             sanitize_error_message=sanitize,
+            privacy=privacy,
             logger=logger,
         ),
         options or None,
@@ -172,6 +176,70 @@ def test_keeps_has_comment_when_the_sanitizer_drops_the_text() -> None:
     props = tracked[0]["event_properties"]
     assert props["[MCP] Feedback Has Comment"] is True
     assert "[MCP] Feedback Comment" not in props
+
+
+def test_emits_with_the_identity_resolver_when_stateless_http_has_no_anchor() -> None:
+    from amplitude_mcp_analytics import SetIdentityInput
+
+    tracked: list[AmplitudeEvent] = []
+    handler = _handler(
+        tracked,
+        identity_resolver=lambda _auth: SetIdentityInput(user_id="user-1"),
+    )
+    handler({"helpful": True})
+    assert len(tracked) == 1
+    assert tracked[0]["event_type"] == SUBMITTED
+    assert tracked[0]["user_id"] == "user-1"
+
+
+def test_caps_a_comment_that_redaction_lengthens() -> None:
+    from amplitude_mcp_analytics.core.privacy import PrivacyConfig
+
+    tracked: list[AmplitudeEvent] = []
+    handler = _handler(
+        tracked,
+        transport="stdio",
+        identity=ServerIdentity(user_id="user-1"),
+        capture_comment=True,
+        privacy=PrivacyConfig(
+            redact_pii=False,
+            custom_redaction_patterns=[{"pattern": "X", "replacement": "Y" * 600}],
+        ),
+    )
+    handler({"helpful": True, "comment": "see X"})
+    comment = tracked[0]["event_properties"]["[MCP] Feedback Comment"]
+    assert comment == "see " + ("Y" * 496)
+    assert len(comment) == 500
+    assert "X" not in comment
+
+
+def test_standalone_callback_uses_the_resolved_name_and_description() -> None:
+    from amplitude_mcp_analytics import create_feedback_tool_handler
+
+    analytics = MockAmplitudeMCPAnalytics(server_name="test-mcp", server_version="9.9.9")
+    callback = create_feedback_tool_handler(
+        analytics, name="rate_help", description="Custom instructions"
+    )
+    assert callback.__name__ == "rate_help"
+    assert callback.__doc__ == "Custom instructions"
+
+    default = create_feedback_tool_handler(analytics, description="   ")
+    assert default.__name__ == "submit_feedback"
+    assert default.__doc__ is not None
+    assert "thanks, that's it" in default.__doc__
+
+    mcp = FastMCP("s")
+    analytics.register_feedback_tool(
+        mcp, name="rate-help", description="Custom instructions", capture_comment=True
+    )
+    registered = mcp._tool_manager.get_tool("rate-help")
+    assert registered is not None
+    assert registered.description == "Custom instructions"
+    properties = registered.parameters["properties"]
+    assert set(properties) == {"helpful", "reason", "comment", "tools", "solicited"}
+    assert properties["comment"]["anyOf"][0]["maxLength"] == 500
+    assert properties["tools"]["anyOf"][0]["maxItems"] == 8
+    assert registered.parameters["required"] == ["helpful"]
 
 
 def test_drops_the_anonymous_floor_unless_emit_anonymous_event_is_set() -> None:
@@ -294,3 +362,28 @@ async def test_lists_the_tool_and_emits_feedback_without_a_tool_call_response() 
     assert REJECTED in invalid_types
     assert SUBMITTED not in invalid_types
     assert RESPONSE not in invalid_types
+
+
+@pytest.mark.anyio
+async def test_authenticated_feedback_uses_the_server_identity_resolver() -> None:
+    from amplitude_mcp_analytics import SetIdentityInput
+
+    analytics = MockAmplitudeMCPAnalytics(server_name="test-mcp", server_version="9.9.9")
+    mcp = FastMCP("s")
+    analytics.instrument_server(
+        mcp, resolve_identity=lambda _auth: SetIdentityInput(user_id="user-9")
+    )
+    analytics.register_feedback_tool(mcp)
+
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=CLIENT
+    ) as client:
+        result = await client.call_tool(
+            "submit_feedback", {"helpful": False, "reason": "other"}
+        )
+        assert result.isError is False
+
+    submitted = analytics.get_events(SUBMITTED)
+    assert len(submitted) == 1
+    assert submitted[0]["user_id"] == "user-9"
+    assert analytics.get_events(RESPONSE) == []

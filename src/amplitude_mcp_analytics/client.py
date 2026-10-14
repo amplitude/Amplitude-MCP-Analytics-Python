@@ -341,6 +341,11 @@ class AmplitudeMCPAnalytics:
                 if (current := current_server_scope()) is not None
                 else self._client_info_resolver
             ),
+            get_identity_resolver=lambda: (
+                current.identity_resolver
+                if (current := current_server_scope()) is not None
+                else None
+            ),
             sanitize_error_message=self.config.sanitize_error_message,
             privacy=self._privacy,
             logger=get_logger(),

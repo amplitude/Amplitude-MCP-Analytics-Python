@@ -282,9 +282,9 @@ or `other`. An optional `tools` list is kept only for names registered on that
 server. `solicited` records whether the agent asked or the user volunteered.
 
 Free-text `comment` is off by default, and the field is then absent from the
-schema. Opt in to emit `[MCP] Feedback Comment`, capped at 500 characters and
-passed through `sanitize_error_message` and the same built-in PII redaction as
-`[MCP] Error Message`:
+schema. Opt in to emit `[MCP] Feedback Comment`, capped at 500 characters
+before and after `sanitize_error_message` and the same built-in PII redaction
+as `[MCP] Error Message`:
 
 ```python
 analytics.register_feedback_tool(server, capture_comment=True)
