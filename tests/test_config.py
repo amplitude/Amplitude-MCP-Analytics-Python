@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from amplitude_mcp_analytics.config import MCPAnalyticsConfig, ResolvedAutocapture
+from amplitude_mcp_analytics.exceptions import ConfigurationError
 
 ALL_ON = ResolvedAutocapture(
     server_events=True, session_lifecycle=True, tools_listed=True, tool_calls=True
@@ -96,6 +97,44 @@ class TestParamCapture:
         assert MCPAnalyticsConfig(
             param_capture={"never_keys": ["safe", 42]}  # type: ignore[list-item]
         ).param_capture.never_keys == ("safe",)
+
+
+class TestPrivacy:
+    def test_redacts_builtin_pii_by_default_and_has_no_custom_rules(self) -> None:
+        config = MCPAnalyticsConfig()
+        assert config.redact_pii is True
+        assert config.custom_redaction_patterns == ()
+        assert config.custom_redaction_fn is None
+
+    def test_honors_opt_out_patterns_and_a_custom_function(self) -> None:
+        def fn(text: str) -> str:
+            return text
+
+        patterns: list[str | dict[str, str]] = [
+            r"secret-\d+",
+            {"pattern": r"\bACME-\d+\b", "replacement": "[ticket]"},
+        ]
+        config = MCPAnalyticsConfig(
+            redact_pii=False,
+            custom_redaction_patterns=patterns,
+            custom_redaction_fn=fn,
+        )
+        assert config.redact_pii is False
+        assert config.custom_redaction_patterns == tuple(patterns)
+        assert config.custom_redaction_fn is fn
+        assert config.to_privacy_config().redact_text("user@x.com secret-9 ACME-4") == (
+            "user@x.com [REDACTED] [ticket]"
+        )
+
+    def test_rejects_a_non_function_callback_and_a_non_list_pattern_list(self) -> None:
+        with pytest.raises(ConfigurationError, match="must be a function"):
+            MCPAnalyticsConfig(custom_redaction_fn="nope")  # type: ignore[arg-type]
+        with pytest.raises(ConfigurationError, match="must be a list"):
+            MCPAnalyticsConfig(custom_redaction_patterns="nope")  # type: ignore[arg-type]
+
+    def test_rejects_an_invalid_regex_when_the_config_is_constructed(self) -> None:
+        with pytest.raises(ConfigurationError, match="not a valid regular expression"):
+            MCPAnalyticsConfig(custom_redaction_patterns=["("])
 
 
 class TestEmitAnonymousEvent:

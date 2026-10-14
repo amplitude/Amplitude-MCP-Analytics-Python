@@ -142,10 +142,12 @@ async def call_failing_tool(config: MCPAnalyticsConfig | None = None) -> dict[st
 
 class TestToolCallResponseSanitization:
     @pytest.mark.anyio
-    async def test_emits_the_raw_result_text_by_default_documented_v0_behavior(self) -> None:
+    async def test_redacts_builtin_pii_in_the_result_text_when_no_sanitizer_is_set(self) -> None:
         event = await call_failing_tool()
         assert event is not None
-        assert event["event_properties"]["[MCP] Error Message"] == PII
+        assert event["event_properties"]["[MCP] Error Message"] == (
+            'No subscriber found for "[email]"'
+        )
 
     @pytest.mark.anyio
     async def test_emits_the_sanitizers_rewrite_instead_of_the_result_text(self) -> None:

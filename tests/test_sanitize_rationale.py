@@ -115,10 +115,9 @@ class TestApplySanitizerHelper:
 
 
 class TestToolCallResponseRationaleSanitization:
-    async def test_emits_the_raw_rationale_by_default_no_wire_change(self) -> None:
-        # The default config must not alter a single byte of the v0 wire shape.
+    async def test_redacts_builtin_pii_in_the_rationale_when_no_sanitizer_is_set(self) -> None:
         props = props_of(await call_tool_with_rationale(), RESPONSE)
-        assert props["[MCP] Rationale"] == PII
+        assert props["[MCP] Rationale"] == "user asked to look up [email]"
 
     async def test_emits_the_sanitizers_rewrite_instead_of_the_raw_rationale(self) -> None:
         props = props_of(
@@ -223,9 +222,9 @@ class TestCustomToolEventRationaleSanitization:
         # The caller's own property is untouched.
         assert custom["status"] == "pass"
 
-    async def test_passes_through_on_a_custom_tool_event_by_default(self) -> None:
+    async def test_redacts_builtin_pii_on_a_custom_tool_event_by_default(self) -> None:
         events = await call_tool_with_rationale(emit_custom=True)
-        assert props_of(events, CUSTOM)["[MCP] Rationale"] == PII
+        assert props_of(events, CUSTOM)["[MCP] Rationale"] == "user asked to look up [email]"
 
     async def test_keeps_an_empty_string_replacement_on_a_custom_tool_event(self) -> None:
         events = await call_tool_with_rationale(
