@@ -484,7 +484,11 @@ analytics = AmplitudeMCPAnalytics(
 `redact_pii=False` turns off the built-in patterns (for example when you
 already redact upstream). Custom patterns, `custom_redaction_fn`, and
 base64-image replacement still run. A `custom_redaction_fn` that raises or
-returns a non-string is skipped for that value; the current text is kept.
+returns a non-string replaces that value with `[content redacted]`. The
+failure is logged once for the config, and the log names the failure kind
+rather than the input. An invalid `custom_redaction_patterns` entry, or a
+`custom_redaction_fn` that is not a function, raises `ConfigurationError`
+when the config is constructed.
 
 ## Context (`ctx`)
 

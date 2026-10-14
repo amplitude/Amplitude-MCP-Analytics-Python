@@ -79,7 +79,7 @@ class TestPrivacyWiring:
         assert props["count"] == 3
         assert props["user email"] == "[email]"
         assert props["org url"] == "amplitude"
-        assert props["profile"] == {"phone": "Call ([phone]"}
+        assert props["profile"] == {"phone": "Call [phone]"}
 
     def test_never_redacts_typed_identity_or_dimension_fields(self) -> None:
         analytics = make_analytics()

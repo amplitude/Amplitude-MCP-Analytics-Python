@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from amplitude_mcp_analytics.core.privacy import (
+    REDACTED_CONTENT_PLACEHOLDER,
     REDACTED_IMAGE_PLACEHOLDER,
     PrivacyConfig,
     create_content_hash,
@@ -16,6 +17,7 @@ from amplitude_mcp_analytics.core.privacy import (
     redact_base64_content,
     redact_pii_patterns,
 )
+from amplitude_mcp_analytics.exceptions import ConfigurationError
 
 PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8A"
@@ -70,6 +72,11 @@ class TestRedactBase64Content:
     def test_redacts_base64_data_urls_and_raw_base64_images(self) -> None:
         assert redact_base64_content("data:image/png;base64,iVBOR") == REDACTED_IMAGE_PLACEHOLDER
         assert redact_base64_content(PNG_BASE64) == REDACTED_IMAGE_PLACEHOLDER
+        assert (
+            redact_base64_content("data:image/png;charset=utf-8;base64,AAA=")
+            == REDACTED_IMAGE_PLACEHOLDER
+        )
+        assert redact_base64_content("data:;base64,AAA=") == REDACTED_IMAGE_PLACEHOLDER
 
     def test_leaves_non_strings_unchanged(self) -> None:
         assert redact_base64_content(42) == 42
@@ -79,8 +86,10 @@ class TestRedactBase64Content:
 class TestRedactPiiPatterns:
     def test_redacts_emails_phones_ssns_credit_cards_and_ip_addresses(self) -> None:
         assert redact_pii_patterns("Contact user@example.com for info") == "Contact [email] for info"
-        assert redact_pii_patterns("Call (555) 123-4567") == "Call ([phone]"
+        assert redact_pii_patterns("Call (555) 123-4567") == "Call [phone]"
         assert redact_pii_patterns("Call +14155552671 today") == "Call [phone] today"
+        assert redact_pii_patterns("Call +44 20 7946 0958") == "Call [phone]"
+        assert redact_pii_patterns("Call +1 (415) 555-2671") == "Call [phone]"
         assert redact_pii_patterns("SSN: 123-45-6789") == "SSN: [ssn]"
         assert redact_pii_patterns("SSN: 123 45 6789") == "SSN: [ssn]"
         assert redact_pii_patterns("Card: 4111 1111 1111 1111") == "Card: [credit_card]"
@@ -95,6 +104,16 @@ class TestRedactPiiPatterns:
 
     def test_does_not_treat_scope_resolution_operators_as_ipv6(self) -> None:
         assert redact_pii_patterns("std::vector and a[::2]") == "std::vector and a[::2]"
+
+    def test_redacts_unicode_local_parts_without_swallowing_cjk(self) -> None:
+        assert redact_pii_patterns("write josé@example.com") == "write [email]"
+        assert redact_pii_patterns("write δοκιμή@example.com") == "write [email]"
+        assert redact_pii_patterns("write почта@example.com") == "write [email]"
+        assert redact_pii_patterns("联系alice@example.com") == "联系[email]"
+
+    def test_bounded_email_matching_stays_linear_on_a_long_dotted_run(self) -> None:
+        dotted = "a." * 4000
+        assert redact_pii_patterns(dotted) == dotted
 
     def test_redacts_repeatedly(self) -> None:
         # Node's global RegExp lastIndex can skip a later call. Python `re.sub`
@@ -138,13 +157,13 @@ class TestPrivacyConfig:
             REDACTED_IMAGE_PLACEHOLDER
         )
 
-    def test_skips_an_invalid_custom_regex_and_still_applies_the_valid_ones(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.WARNING, logger="amplitude_mcp_analytics")
-        privacy = PrivacyConfig(redact_pii=False, custom_redaction_patterns=["(", r"secret-\d+"])
-        assert privacy.redact_text("token secret-99") == "token [REDACTED]"
-        assert any("invalid custom redaction regex" in record.getMessage() for record in caplog.records)
+    def test_rejects_an_invalid_custom_regex_at_configuration_time(self) -> None:
+        with pytest.raises(ConfigurationError, match="not a valid regular expression"):
+            PrivacyConfig(redact_pii=False, custom_redaction_patterns=["(", r"secret-\d+"])
+
+    def test_rejects_a_pattern_that_is_not_a_string_or_mapping(self) -> None:
+        with pytest.raises(ConfigurationError, match=r"custom_redaction_patterns\[0\]"):
+            PrivacyConfig(custom_redaction_patterns=[42])  # type: ignore[list-item]
 
     def test_applies_a_pattern_object_replacement_after_builtin_patterns(self) -> None:
         privacy = PrivacyConfig(
@@ -152,20 +171,28 @@ class TestPrivacyConfig:
         )
         assert privacy.redact_text("user@x.com filed ACME-12") == "[email] filed [ticket]"
 
-    def test_keeps_the_current_text_when_custom_redaction_fn_throws_or_returns_a_non_string(
+    def test_replaces_text_when_custom_redaction_fn_throws_or_returns_a_non_string(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.ERROR, logger="amplitude_mcp_analytics")
 
         def throwing(_text: str) -> str:
-            raise RuntimeError("redactor bug")
+            raise RuntimeError("redactor bug secret-value")
 
         throwing_privacy = PrivacyConfig(redact_pii=False, custom_redaction_fn=throwing)
-        assert throwing_privacy.redact_text("keep me") == "keep me"
+        assert throwing_privacy.redact_text("keep me") == REDACTED_CONTENT_PLACEHOLDER
+        assert throwing_privacy.redact_text("again") == REDACTED_CONTENT_PLACEHOLDER
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "RuntimeError" in message
+        assert "secret-value" not in message
+        assert REDACTED_CONTENT_PLACEHOLDER in message
+
+        caplog.clear()
 
         def wrong_type(_text: str) -> str:
             return 42  # type: ignore[return-value]
 
         wrong = PrivacyConfig(redact_pii=False, custom_redaction_fn=wrong_type)
-        assert wrong.redact_text("keep me") == "keep me"
-        assert len(caplog.records) == 2
+        assert wrong.redact_text("keep me") == REDACTED_CONTENT_PLACEHOLDER
+        assert "int" in caplog.records[0].getMessage()

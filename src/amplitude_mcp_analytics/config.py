@@ -231,23 +231,26 @@ class MCPAnalyticsConfig:
         #: default. Identity and dimension fields (user id, session id, server
         #: name, tool name, …) are never redacted.
         self.redact_pii = redact_pii
-        if isinstance(custom_redaction_patterns, (list, tuple)):
-            patterns: tuple[str | Mapping[str, str], ...] = tuple(custom_redaction_patterns)
-        else:
-            patterns = ()
+        #: Final redaction pass applied to free-form content after every
+        #: pattern. Still runs when ``redact_pii`` is ``False``. A function
+        #: that raises, or that returns a non-string, replaces that value with
+        #: ``[content redacted]``. A non-callable value raises
+        #: ``ConfigurationError``.
+        self.custom_redaction_fn = custom_redaction_fn
+        # Compile now so a bad pattern or callback fails at configuration time,
+        # not on the first event. The client reuses this instance.
+        self._privacy = PrivacyConfig(
+            redact_pii=self.redact_pii,
+            custom_redaction_patterns=custom_redaction_patterns,
+            custom_redaction_fn=custom_redaction_fn,
+        )
         #: Extra redaction rules applied to free-form content after the built-in
         #: PII patterns. A bare string is a regex replaced with ``[REDACTED]``;
         #: a mapping supplies ``pattern`` and ``replacement``. Still runs when
-        #: ``redact_pii`` is ``False``. A bare string (or anything that is not
-        #: a list or tuple) is ignored.
-        self.custom_redaction_patterns = patterns
-        #: Final redaction pass applied to free-form content after every
-        #: pattern. Still runs when ``redact_pii`` is ``False``. A function
-        #: that raises, or that returns a non-string, is skipped for that
-        #: value and the current text is kept.
-        self.custom_redaction_fn = (
-            custom_redaction_fn if callable(custom_redaction_fn) else None
-        )
+        #: ``redact_pii`` is ``False``. Anything that is not a list or tuple of
+        #: those entries, including an invalid regex, raises
+        #: ``ConfigurationError``.
+        self.custom_redaction_patterns = self._privacy.custom_patterns
         raw_capture = param_capture if isinstance(param_capture, Mapping) else {}
         raw_shape = raw_capture.get("shape", True)
         never_keys = (
@@ -264,14 +267,11 @@ class MCPAnalyticsConfig:
         )
 
     def to_privacy_config(self) -> PrivacyConfig:
-        """Build the redaction policy applied to free-form event content at emit time.
+        """The redaction policy compiled when this config was constructed.
 
-        The client constructs this once and threads it through every emit site.
+        The client threads this same instance through every emit site, so a
+        custom-redaction failure is logged once for the config.
 
         @internal Not part of the public package surface.
         """
-        return PrivacyConfig(
-            redact_pii=self.redact_pii,
-            custom_redaction_patterns=list(self.custom_redaction_patterns),
-            custom_redaction_fn=self.custom_redaction_fn,
-        )
+        return self._privacy

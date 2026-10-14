@@ -1,10 +1,17 @@
 """PII redaction for free-form event content.
 
-Ported from Amplitude-MCP-Analytics-Node ``src/core/privacy.ts`` at commit
-``3b481c9`` (PR #58), which vendors Amplitude-AI-Node ``src/core/privacy.ts``
-at ``c8ab2be``. The patterns, base64-image replacement, and content hash match
-that module. Agent-only pieces are not ported: ``$llm_message`` chunking,
-content modes, and system-prompt / reasoning / tool-definition shaping.
+Ported from Amplitude-AI-Node ``src/core/privacy.ts`` at ``792806e`` for the
+domain-agnostic redaction behavior (bounded Unicode email matching, base64
+data URLs with MIME parameters, config-time pattern validation, and
+fail-closed custom redaction). Phone patterns follow Amplitude-MCP-Analytics-Node
+``src/core/privacy.ts`` at ``0492eed``, which formats numbers AA has not
+taken. Agent-only pieces are not ported: ``$llm_message`` chunking, content
+modes, the 100k text cap, and ``toTextSafe``.
+
+Stdlib ``re`` has no ``\\p{Script=...}``. The email letter class approximates
+Latin, Greek, and Cyrillic with Unicode ranges. Python ``\\w`` and ``\\b`` are
+Unicode, so the phone boundaries use an ASCII word class to match Node's
+non-unicode ``\\w`` / ``\\b``.
 
 ``PrivacyConfig`` is taxonomy-free (``redact_text`` / ``redact_value``). The
 MCP emit seam decides which fields are redacted. Base64-image replacement
@@ -17,20 +24,54 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
+from ..exceptions import ConfigurationError
 from ..utils.logger import get_logger
 
 REDACTED_IMAGE_PLACEHOLDER = "[base64 image redacted]"
+REDACTED_CONTENT_PLACEHOLDER = "[content redacted]"
 
-# Patterns match the Node module, including the phone false-edge that leaves
-# a leading "(" (`Call (555) 123-4567` → `Call ([phone]`). `\b` / `\d` / `\w`
-# stay on Python's default Unicode classes; the cases these patterns exist
-# for are ASCII, and a caller's custom pattern is compiled the same way.
-_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_PHONE_RE = re.compile(r"\b\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})\b")
+# Latin (including Latin-1, so "josé" matches), Greek, and Cyrillic. Han, Kana,
+# and Hangul are absent so CJK text written against an address is not swallowed
+# into the local part ("联系alice@example.com" → "联系[email]").
+_EMAIL_LETTER = (
+    "A-Za-z"
+    "\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u00ff"
+    "\u0100-\u024f"
+    "\u0250-\u02af"
+    "\u1e00-\u1eff"
+    "\u2c60-\u2c7f"
+    "\ua720-\ua7ff"
+    "\uab30-\uab6f"
+    "\u0370-\u03ff"
+    "\u1f00-\u1fff"
+    "\u0400-\u04ff"
+    "\u0500-\u052f"
+    "\u1c80-\u1c8f"
+    "\u2de0-\u2dff"
+    "\ua640-\ua69f"
+)
+_EMAIL_MARK = "\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f"
+_EMAIL_NUMBER = "0-9"
+_EMAIL_LOCAL = f"{_EMAIL_LETTER}{_EMAIL_MARK}{_EMAIL_NUMBER}._%+\\-"
+_EMAIL_LABEL = f"{_EMAIL_LETTER}{_EMAIL_MARK}{_EMAIL_NUMBER}\\-"
+# Every quantifier is bounded, and a match may only start where the preceding
+# character cannot belong to a local part, so matching stays linear.
+_EMAIL_RE = re.compile(
+    rf"(?<![{_EMAIL_LOCAL}])"
+    rf"[{_EMAIL_LOCAL}]{{1,64}}"
+    rf"@(?:[{_EMAIL_LABEL}]{{1,63}}\.){{1,8}}"
+    rf"[{_EMAIL_LETTER}]{{2,63}}"
+    rf"(?![{_EMAIL_LETTER}{_EMAIL_MARK}{_EMAIL_NUMBER}_])"
+)
+# `(?<![A-Za-z0-9_])` rather than `\b`, so an opening `(` is part of the match.
+# An ASCII class matches Node's non-unicode `\w` / `\b`.
+_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}(?![A-Za-z0-9_])"
+)
 _CREDIT_CARD_RE = re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b")
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _SSN_SPACE_RE = re.compile(r"\b\d{3} \d{2} \d{4}\b")
@@ -47,8 +88,14 @@ _IPV6_RE = re.compile(
     r"|(?<![^\s])::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b"
     r"|(?<![^\s])::1\b)"
 )
-_INTL_PHONE_RE = re.compile(r"(?<!\w)\+[1-9]\d{6,14}\b")
-_BASE64_DATA_URL_RE = re.compile(r"^data:([^;]+);base64,")
+# 7–15 digits total (`[1-9]` plus 6–14 more), with spaces, dots, dashes, or
+# parentheses between digits. An uninterrupted `+14155552671` still matches.
+_INTL_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\+[1-9](?:[ \t.\-()]*\d){6,14}(?![A-Za-z0-9_])"
+)
+# MIME parameters (`data:image/png;charset=utf-8;base64,`) and an omitted
+# media type (`data:;base64,`) are both data-URL images.
+_BASE64_DATA_URL_RE = re.compile(r"^data:[^;,]*(?:;[^;,]+)*?;base64,")
 _RAW_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+=*$")
 _BASE64_ALPHABET_MARK = re.compile(r"[+/=]")
 
@@ -127,13 +174,15 @@ def redact_pii_patterns(text: Any) -> Any:
         return text
     result = text
     result = _EMAIL_RE.sub("[email]", result)
+    # International before the domestic pattern, so `+1 (415) 555-2671` is one
+    # token instead of a leftover `+1` plus a domestic match.
+    result = _INTL_PHONE_RE.sub("[phone]", result)
     result = _PHONE_RE.sub("[phone]", result)
     result = _CREDIT_CARD_RE.sub("[credit_card]", result)
     result = _SSN_RE.sub("[ssn]", result)
     result = _SSN_SPACE_RE.sub("[ssn]", result)
     result = _IPV4_RE.sub("[ip_address]", result)
     result = _IPV6_RE.sub("[ip_address]", result)
-    result = _INTL_PHONE_RE.sub("[phone]", result)
     return result
 
 
@@ -151,32 +200,19 @@ class PrivacyConfig:
         self,
         *,
         redact_pii: bool = True,
-        custom_redaction_patterns: list[Any] | tuple[Any, ...] | None = None,
+        custom_redaction_patterns: Sequence[Any] | None = None,
         custom_redaction_fn: Callable[[str], str] | None = None,
     ) -> None:
         self.redact_pii = redact_pii
-        self.custom_patterns: tuple[Any, ...] = (
-            tuple(custom_redaction_patterns) if custom_redaction_patterns else ()
-        )
-        self._compiled: list[tuple[re.Pattern[str], str]] = []
+        if custom_redaction_fn is not None and not callable(custom_redaction_fn):
+            raise ConfigurationError(
+                "AmplitudeMCPAnalytics: custom_redaction_fn must be a function."
+            )
         self._custom_redaction_fn = custom_redaction_fn
-
-        for pattern in self.custom_patterns:
-            source, replacement = _pattern_source(pattern)
-            if source is None or replacement is None:
-                get_logger().warning(
-                    "AmplitudeMCPAnalytics: skipping custom redaction pattern that is "
-                    "not a string or {pattern, replacement}."
-                )
-                continue
-            try:
-                self._compiled.append((re.compile(source), replacement))
-            except re.error as exc:
-                get_logger().warning(
-                    'AmplitudeMCPAnalytics: invalid custom redaction regex "%s": %s',
-                    source,
-                    exc,
-                )
+        self.custom_patterns, self._compiled = _compile_custom_patterns(
+            custom_redaction_patterns
+        )
+        self._warned_custom_redaction_failure = False
 
     def redact_text(self, text: str) -> str:
         """Redact one string: built-in PII patterns (when enabled), then custom
@@ -218,35 +254,75 @@ class PrivacyConfig:
             try:
                 result = regex.sub(replacement, result)
             except re.error as exc:
-                get_logger().warning(
-                    'AmplitudeMCPAnalytics: custom redaction regex "%s" failed: %s',
-                    regex.pattern,
-                    exc,
+                self._warn_custom_redaction_failure(
+                    f"custom_redaction_patterns /{regex.pattern}/ failed ({type(exc).__name__})"
                 )
+                return REDACTED_CONTENT_PLACEHOLDER
         return result
 
     def _apply_custom_fn(self, text: str) -> str:
         if self._custom_redaction_fn is None:
             return text
         try:
-            # The callback is typed to return str; the check below is the
-            # fail-open guard for a function that doesn't.
             result: Any = self._custom_redaction_fn(text)
-        except Exception as exc:  # noqa: BLE001 — fail-open: keep the current text
-            get_logger().error(
-                "AmplitudeMCPAnalytics: custom_redaction_fn raised an exception: %s "
-                "— PII may not be fully redacted for this value",
-                exc,
+        except Exception as exc:  # noqa: BLE001 — replace the value; do not log the message
+            # The exception message may echo the input, so only its type is logged.
+            self._warn_custom_redaction_failure(
+                f"custom_redaction_fn threw {type(exc).__name__}"
             )
-            return text
+            return REDACTED_CONTENT_PLACEHOLDER
         if isinstance(result, str):
             return result
-        get_logger().error(
-            "AmplitudeMCPAnalytics: custom_redaction_fn returned %s instead of str; "
-            "skipping — PII may not be fully redacted for this value",
-            type(result).__name__,
+        self._warn_custom_redaction_failure(
+            f"custom_redaction_fn returned {type(result).__name__} instead of str"
         )
-        return text
+        return REDACTED_CONTENT_PLACEHOLDER
+
+    def _warn_custom_redaction_failure(self, detail: str) -> None:
+        if self._warned_custom_redaction_failure:
+            return
+        self._warned_custom_redaction_failure = True
+        get_logger().error(
+            'AmplitudeMCPAnalytics: %s; content replaced with "%s". '
+            "Further failures from this config are not logged.",
+            detail,
+            REDACTED_CONTENT_PLACEHOLDER,
+        )
+
+
+def _compile_custom_patterns(
+    patterns: Sequence[Any] | None,
+) -> tuple[tuple[Any, ...], tuple[tuple[re.Pattern[str], str], ...]]:
+    """Compile caller patterns. Invalid entries raise rather than being skipped.
+
+    A typo has to fail at configuration time. Skipping the rule would leave
+    that text unredacted with only a log line to show for it.
+    """
+    if patterns is None:
+        return (), ()
+    if not isinstance(patterns, (list, tuple)):
+        raise ConfigurationError(
+            "AmplitudeMCPAnalytics: custom_redaction_patterns must be a list of "
+            "strings or {pattern, replacement} mappings."
+        )
+    compiled: list[tuple[re.Pattern[str], str]] = []
+    for index, pattern in enumerate(patterns):
+        source, replacement = _pattern_source(pattern)
+        if source is None or replacement is None:
+            raise ConfigurationError(
+                "AmplitudeMCPAnalytics: "
+                f"custom_redaction_patterns[{index}] must be a string or "
+                "{pattern, replacement}."
+            )
+        try:
+            compiled.append((re.compile(source), replacement))
+        except re.error as exc:
+            raise ConfigurationError(
+                "AmplitudeMCPAnalytics: "
+                f"custom_redaction_patterns[{index}] is not a valid regular "
+                f"expression: {exc}"
+            ) from exc
+    return tuple(patterns), tuple(compiled)
 
 
 def _pattern_source(pattern: Any) -> tuple[str | None, str | None]:

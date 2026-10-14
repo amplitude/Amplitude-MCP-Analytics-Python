@@ -548,7 +548,8 @@ Two deliberate behaviors: the sanitizer never sees a successful call, and it
 string) omits the property rather than falling back to the raw message — the
 value it exists to suppress is never emitted because the function was buggy. The
 rest of the event is unaffected, and the tool response never breaks.
-`custom_redaction_fn` is a different hook: a raise there keeps the current text.
+`custom_redaction_fn` is a different hook: a raise there replaces that value
+with `[content redacted]` and is logged once, without the input text.
 
 The message reaching the client is never modified; this affects telemetry only.
 To control the client-facing text as well, build the result with

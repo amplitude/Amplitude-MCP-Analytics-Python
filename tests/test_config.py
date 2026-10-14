@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from amplitude_mcp_analytics.config import MCPAnalyticsConfig, ResolvedAutocapture
+from amplitude_mcp_analytics.exceptions import ConfigurationError
 
 ALL_ON = ResolvedAutocapture(
     server_events=True, session_lifecycle=True, tools_listed=True, tool_calls=True
@@ -125,13 +126,15 @@ class TestPrivacy:
             "user@x.com [REDACTED] [ticket]"
         )
 
-    def test_ignores_a_non_function_custom_redaction_fn_and_a_non_list_pattern_list(self) -> None:
-        config = MCPAnalyticsConfig(
-            custom_redaction_fn="nope",  # type: ignore[arg-type]
-            custom_redaction_patterns="nope",  # type: ignore[arg-type]
-        )
-        assert config.custom_redaction_fn is None
-        assert config.custom_redaction_patterns == ()
+    def test_rejects_a_non_function_callback_and_a_non_list_pattern_list(self) -> None:
+        with pytest.raises(ConfigurationError, match="must be a function"):
+            MCPAnalyticsConfig(custom_redaction_fn="nope")  # type: ignore[arg-type]
+        with pytest.raises(ConfigurationError, match="must be a list"):
+            MCPAnalyticsConfig(custom_redaction_patterns="nope")  # type: ignore[arg-type]
+
+    def test_rejects_an_invalid_regex_when_the_config_is_constructed(self) -> None:
+        with pytest.raises(ConfigurationError, match="not a valid regular expression"):
+            MCPAnalyticsConfig(custom_redaction_patterns=["("])
 
 
 class TestEmitAnonymousEvent:
