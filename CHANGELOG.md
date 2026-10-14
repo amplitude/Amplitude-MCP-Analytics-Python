@@ -12,6 +12,13 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.5.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.4.0...v0.5.0) (2026-10-14)
+
+
+### Features
+
+* redact PII from free-form event content by default ([#15](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/15)) ([df99658](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/df99658c381d5258cf6dd6ca1ddeaca2419927dc))
+
 ## [0.4.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.3.0...v0.4.0) (2026-10-06)
 
 
