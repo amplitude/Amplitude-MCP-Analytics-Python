@@ -19,6 +19,7 @@ Amplitude SDKs on the same project.
 | [`[MCP] Tools Listed`](#mcp-tools-listed) | A `tools/list` request is served | all | `autocapture.tools_listed` |
 | [`[MCP] Tool Call Response`](#mcp-tool-call-response) | An instrumented tool call settles | all | `autocapture.tool_calls` |
 | [`[MCP] Tool Call Rejected`](#mcp-tool-call-rejected) | A `tools/call` request fails before any tool callback runs | all | `autocapture.tool_calls` |
+| [`[MCP] Feedback Submitted`](#mcp-feedback-submitted) | The opt-in `submit_feedback` tool is called | all | `register_feedback_tool` (not autocapture) |
 
 (`session_lifecycle` and `tools_listed` default to the umbrella
 `autocapture.server_events` value — see the README's
@@ -28,13 +29,17 @@ A sessionless Streamable HTTP transport still performs the `initialize`
 handshake, so initialization is reported with no session id. It does not emit
 an end event because its run lives for only one request and has no meaningful
 session duration.
-`[MCP] Tools Listed`, `[MCP] Tool Call Response`, and
-`[MCP] Tool Call Rejected` fire on every transport.
+`[MCP] Tools Listed`, `[MCP] Tool Call Response`, `[MCP] Tool Call Rejected`,
+and `[MCP] Feedback Submitted` fire on every transport. The feedback event
+fires only when the server opted in with `register_feedback_tool`.
 
-All five events require `instrument_server(server)` to have been called before
-the server runs. `instrument_tool` without a bound server is a no-op
-passthrough: the handler runs untouched and nothing is emitted (a one-time
-warning is logged).
+The five autocaptured events require `instrument_server(server)` to have been
+called before the server runs. `instrument_tool` without a bound server is a
+no-op passthrough: the handler runs untouched and nothing is emitted (a
+one-time warning is logged). `[MCP] Feedback Submitted` requires both:
+`register_feedback_tool` adds the tool, and `instrument_server` is what lets
+the call emit. Without `instrument_server` the tool still answers and emits
+nothing.
 
 ### Emission guarantees
 
@@ -461,6 +466,54 @@ rejection is still recorded with its code and duration — only the attribution 
 withheld. If you see `unrecognized` climbing after an SDK upgrade, that is the
 signal to look at what upstream added.
 
+## `[MCP] Feedback Submitted`
+
+Opt-in. Emitted when the agent calls the `submit_feedback` tool registered by
+`register_feedback_tool`. It is the direct "did this help?" signal: the agent
+reports what the user expressed, and the SDK does not read any other tool's
+result to infer it.
+
+`instrument_server` does not register the tool. A server that never calls
+`register_feedback_tool` is unchanged.
+
+- **Fires when:** the feedback tool's callback runs with a boolean `helpful`.
+  A payload that fails the tool's schema never reaches the callback, so it is
+  a [`[MCP] Tool Call Rejected`](#mcp-tool-call-rejected) instead, like any
+  other tool.
+- **Not paired with** `[MCP] Tool Call Response`. The feedback call is not an
+  instrumented tool execution, and counting it there would mix a survey with
+  tool usage.
+- **Transports:** all. The stateless-HTTP skip rule applies per request. A
+  fully anonymous, tenant-less call is dropped unless `emit_anonymous_event`
+  is on — the same rule as every other event.
+- **Toggle:** there is no autocapture flag. Registering the tool is the opt-in.
+  `autocapture.tool_calls = False` does not suppress this event.
+- **Identity and correlation:** tool-scope. The event inherits identity,
+  client, server, and transport from the request. The event carries no
+  conversation content.
+- **Listed:** the tool is a real tool, so it is included in
+  `[MCP] Tools Listed`.
+
+The tool result returned to the agent is static text. It does not echo the
+arguments. It tells the agent the feedback was recorded and not to ask again
+in the conversation unless the user raises it.
+
+**Event-specific properties** (on top of the shared tool-scope set):
+
+| Property | Type | Present | Value |
+| -- | -- | -- | -- |
+| `[MCP] Tool Name` | string | always | The registered name, default `submit_feedback` |
+| `[MCP] Feedback Helpful` | boolean | always | The `helpful` argument |
+| `[MCP] Feedback Reason` | string | when the agent sent a known reason | One of `wrong_result`, `incomplete`, `too_slow`, `wrong_tool`, `missing_capability`, `other`. Any other value is dropped |
+| `[MCP] Feedback Solicited` | boolean | when the agent sent a boolean | `true` when the agent asked, `false` when the user volunteered it. Omitted rather than guessed |
+| `[MCP] Feedback Tool Names` | string[] | when at least one name matched the server's registry | Up to 8 names, deduplicated, in the order given. Names that are not registered on that server are dropped. Omitted entirely when the registry cannot be read |
+| `[MCP] Feedback Has Comment` | boolean | always | `true` when comment capture is on and the user supplied a non-empty comment, including when redaction then drops the text |
+| `[MCP] Feedback Comment` | string | when comment capture is on and the text survived redaction | Capped at 500 characters before and after [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction), so a replacement that lengthens the text is still at most 500 characters. Absent when `capture_comment` is left at its default `False` |
+
+`comment` is off by default, and the field is then absent from the tool schema
+so the agent is not asked for free text. Turn it on with
+`register_feedback_tool(server, capture_comment=True)`.
+
 ## Error classification
 
 `[MCP] Error Type` is a **closed, SDK-owned** set — the SDK assigns it; hosts
@@ -629,8 +682,9 @@ and collisions never arise.
 Free-form strings in `extra` and per-call `properties` are redacted before
 delivery. Reserved dimension fields — user id, device id, group, session id,
 server and tool names, error type, and the other `[MCP] ` properties except
-`[MCP] Rationale` and `[MCP] Error Message` — are not. `[MCP] Rationale`,
-`[MCP] Error Message`, and opt-in `[MCP] Param:` values are redacted. The SDK
+`[MCP] Rationale`, `[MCP] Error Message`, and `[MCP] Feedback Comment` — are
+not. `[MCP] Rationale`, `[MCP] Error Message`, `[MCP] Feedback Comment`, and
+opt-in `[MCP] Param:` values are redacted. The SDK
 does not otherwise escape or truncate those strings. Apply output encoding
 where the data is rendered. See
 [Privacy and redaction](../README.md#privacy-and-redaction).
@@ -666,6 +720,12 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Error Code` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — only when a specific code is known |
 | `[MCP] Error HTTP Status` | number | `Tool Call Response` (when the failure carried an HTTP status — the tool's, not the transport's) |
 | `[MCP] Error Message` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — after [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction) |
+| `[MCP] Feedback Comment` | string | `Feedback Submitted`, only when `capture_comment=True` and the text survived redaction |
+| `[MCP] Feedback Has Comment` | boolean | `Feedback Submitted` |
+| `[MCP] Feedback Helpful` | boolean | `Feedback Submitted` |
+| `[MCP] Feedback Reason` | string | `Feedback Submitted`, when the agent sent a known reason |
+| `[MCP] Feedback Solicited` | boolean | `Feedback Submitted`, when the agent sent a boolean |
+| `[MCP] Feedback Tool Names` | string[] | `Feedback Submitted`, when at least one name matched the server's registry |
 | `[MCP] Error Type` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` |
 | `[MCP] Is Error` | boolean | `Tools Listed`, `Tool Call Response`, `Tool Call Rejected` |
 | `[MCP] Param Count` | number | `Tool Call Response` (argument-taking handlers, shape capture enabled) |

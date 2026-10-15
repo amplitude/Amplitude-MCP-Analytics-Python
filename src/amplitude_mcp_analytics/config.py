@@ -57,7 +57,8 @@ replacement string, or ``None`` to omit the property entirely
 (``[MCP] Error Code`` and ``[MCP] Error Type`` are unaffected either way).
 
 Applied to every event that carries the property: ``[MCP] Tools Listed``,
-``[MCP] Tool Call Response``, and ``[MCP] Tool Call Rejected``.
+``[MCP] Tool Call Response``, and ``[MCP] Tool Call Rejected``. The same
+function redacts ``[MCP] Feedback Comment`` when comment capture is on.
 
 A sanitizer that raises is treated as ``None``. It fails **closed** — the raw
 message is never used as a fallback, since a sanitizer exists precisely to keep
