@@ -1,4 +1,5 @@
 # amplitude-mcp-analytics
+[![pypi version](https://img.shields.io/pypi/v/amplitude-mcp-analytics?style=flat&logo=pypi&color=blue)](https://pypi.org/project/amplitude-mcp-analytics/)
 
 Amplitude MCP Analytics SDK — Model Context Protocol server usage tracking for Amplitude Analytics.
 
