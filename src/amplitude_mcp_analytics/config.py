@@ -62,7 +62,9 @@ function redacts ``[MCP] Feedback Comment`` when comment capture is on.
 
 A sanitizer that raises is treated as ``None``. It fails **closed** — the raw
 message is never used as a fallback, since a sanitizer exists precisely to keep
-that value out of the event stream.
+that value out of the event stream. Fingerprints are unaffected. Normalized
+messages are derived only after sanitization and PII/custom redaction, and
+omitted when the final message is absent or empty.
 """
 
 RationaleSanitizer = Callable[[str], str | None]

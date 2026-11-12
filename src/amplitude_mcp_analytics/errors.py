@@ -278,7 +278,7 @@ def classify_error(err: Any) -> McpToolError:
 _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
 )
-_DIGITS_RE = re.compile(r"\b\d+\b")
+_DIGITS_RE = re.compile(r"\b\d+\b", re.ASCII)
 _DQUOTE_RE = re.compile(r'"[^"]*"')
 _SQUOTE_RE = re.compile(r"'[^']*'")
 

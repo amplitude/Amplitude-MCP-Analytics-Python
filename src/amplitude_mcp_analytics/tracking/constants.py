@@ -90,6 +90,8 @@ EVENT_PROPERTY_KEYS: dict[str, str] = {
     "rejection_reason": "[MCP] Rejection Reason",
     "is_error": "[MCP] Is Error",
     "error_message": "[MCP] Error Message",
+    "error_message_normalized": "[MCP] Error Message Normalized",
+    "error_fingerprint": "[MCP] Error Fingerprint",
     "error_code": "[MCP] Error Code",
     "error_type": "[MCP] Error Type",
     "error_http_status": "[MCP] Error HTTP Status",

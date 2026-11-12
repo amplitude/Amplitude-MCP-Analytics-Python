@@ -46,6 +46,7 @@ class TestThrownShape:
 
         assert out == PreDispatchRejection(
             message="MCP error -32602: Tool nope not found",
+            fingerprint="33cf343dcbd2",
             json_rpc_code=-32602,
             reason="unknown_tool",
         )
@@ -66,6 +67,7 @@ class TestThrownShape:
         out = classify_pre_dispatch_rejection(error=Exception("something broke"))
         assert out == PreDispatchRejection(
             message="something broke",
+            fingerprint="015cc50c7392",
             json_rpc_code=None,
             reason="unrecognized",
         )

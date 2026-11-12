@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.privacy import PrivacyConfig
+from ..errors import normalize_message
 from .constants import EVENT_PROPERTY_KEYS, FEEDBACK_COMMENT_MAX
 from .types import TrackEventOptions
 
@@ -50,6 +51,7 @@ _FREE_TEXT_RESERVED = frozenset(
     {
         EVENT_PROPERTY_KEYS["rationale"],
         EVENT_PROPERTY_KEYS["error_message"],
+        EVENT_PROPERTY_KEYS["error_message_normalized"],
         _FEEDBACK_COMMENT_KEY,
     }
 )
@@ -69,6 +71,8 @@ def redact_freeform_properties(
     """
     redacted: dict[str, Any] = {}
     for key, value in properties.items():
+        if key == EVENT_PROPERTY_KEYS["error_message_normalized"]:
+            continue
         if key in _DIMENSION_KEYS:
             redacted[key] = value
             continue
@@ -82,4 +86,7 @@ def redact_freeform_properties(
         ):
             cleaned = cleaned[:FEEDBACK_COMMENT_MAX]
         redacted[key] = cleaned
+    message = redacted.get(EVENT_PROPERTY_KEYS["error_message"])
+    if isinstance(message, str) and message:
+        redacted[EVENT_PROPERTY_KEYS["error_message_normalized"]] = normalize_message(message)
     return redacted

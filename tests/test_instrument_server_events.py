@@ -270,6 +270,8 @@ async def test_tools_listed_error_preserves_the_throw_and_sanitizes() -> None:
     # The raw message ("kaboom secret=xyz") never reaches the event stream.
     assert props["[MCP] Error Message"] == "<redacted>"
     assert props["[MCP] Error Type"] == "thrown_exception"
+    assert props["[MCP] Error Message Normalized"] == "<redacted>"
+    assert props["[MCP] Error Fingerprint"]
 
 
 async def test_tools_listed_error_message_is_unsanitized_by_default() -> None:
