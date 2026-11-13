@@ -474,6 +474,23 @@ AmplitudeMCPAnalytics(
 )
 ```
 
+Error events also include `[MCP] Error Fingerprint` when a non-empty structured
+fingerprint exists, including caller overrides via `build_tool_error(fingerprint=...)`.
+It is the first 12 hex characters of SHA-256 of `type:normalizedMessage`:
+UUIDs, whole ASCII numbers, and quoted strings become `<uuid>`, `<n>`,
+and quoted `<str>` placeholders. It remains present when the message is dropped.
+Tools Listed failures and thrown rejections forward existing fingerprints;
+in-band rejections do not invent one.
+
+`[MCP] Error Message Normalized` is computed only from the final message,
+in order: sanitize → PII/custom redaction → normalize. Supplied normalized
+values are ignored; absent, empty, or dropped messages omit this property.
+
+| Property | Availability |
+|---|---|
+| `[MCP] Error Fingerprint` | Tool Call Response, Tools Listed failures, and thrown Tool Call Rejected events when the structured fingerprint is non-empty |
+| `[MCP] Error Message Normalized` | Error events with a non-empty final sanitized and redacted message |
+
 Return `None` to omit the property entirely. A sanitizer that raises fails
 **closed** — the property is omitted, never the raw message. `[MCP] Error Code`
 and `[MCP] Error Type` are unaffected, so failures stay segmentable. The text

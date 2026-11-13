@@ -226,6 +226,8 @@ call time (tools added or removed after startup are reflected).
 | `[MCP] Is Error` | boolean | always | `true` when the `tools/list` handler raised |
 | `[MCP] Tool Count` | number | always | Number of tools returned. Always the **true total**, even when the names list is truncated; `0` on failure |
 | `[MCP] Tool Names` | string[] | when ≥ 1 tool | The returned tool names, capped at **100** entries |
+| `[MCP] Error Fingerprint` | string | on failure, when non-empty | Original structured fingerprint, independent of message sanitization |
+| `[MCP] Error Message Normalized` | string | when final message is non-empty | Normalized after sanitization and PII/custom redaction |
 | `[MCP] Tool Names Truncated` | boolean | only when capped | `true` when more than 100 names were returned and the list was truncated; absent otherwise |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock duration of the `tools/list` handler |
 | `[MCP] Response Size` | number (bytes) | on success, when serializable | Serialized byte size of the full `tools/list` result |
@@ -273,6 +275,8 @@ The default tool-execution event — one per call of a handler wrapped with
 | `[MCP] Error Code` | string | on failure, when a specific code is known | Machine-readable error identifier — the host's `code` from `analytics.tool_error()`, a raised error's own `code` attribute, or a network code assigned by the classifier. Absent for a bare raised exception with no code |
 | `[MCP] Error Type` | string | on failure | Error category — see [Error classification](#error-classification) |
 | `[MCP] Error HTTP Status` | number | on failure, when the failure carried one | HTTP status attached to the tool's failure (the tool's, not the transport's) — see [Error classification](#error-classification) |
+| `[MCP] Error Fingerprint` | string | when non-empty | Existing structured fingerprint, including caller overrides, even when the message is dropped |
+| `[MCP] Error Message Normalized` | string | when final message is non-empty | Normalized after sanitization and PII/custom redaction |
 
 The tool-scope `extra` bag (from the tool metadata) and the server-scope bag
 both ride along as additional properties. The bag is read at emit time, so a
@@ -416,6 +420,8 @@ reserved key that per-tool dashboards slice on.
 | `[MCP] Error Message` | string | unless dropped by [`sanitize_error_message`](#redacting-mcp-error-message) | Message of the classified error, as the client saw it (e.g. `Unknown tool: foo`, `Input validation error: …`), then passed through [built-in PII redaction](#redacting-mcp-error-message) |
 | `[MCP] Error Code` | string | when recoverable | The JSON-RPC error code for the rejection (e.g. `-32602` invalid params). The Python SDK reports pre-dispatch failures as in-band results with no structural code, so it is parsed back out of an `MCP error <code>:` message prefix when one is present; an attributed in-band rejection with no recoverable code falls back to `-32603` (internal error). Absent only when a raised rejection carried no code at all |
 | `[MCP] Error Type` | string | always | Always `protocol_error` — see [Error classification](#error-classification) |
+| `[MCP] Error Fingerprint` | string | thrown rejections only, when non-empty | Original classified fingerprint; never invented for in-band rejections |
+| `[MCP] Error Message Normalized` | string | when final message is non-empty | Normalized after sanitization and PII/custom redaction |
 | `[MCP] Response Duration` | number (ms, integer) | always | Wall-clock duration of the `tools/call` handler |
 | `[MCP] Response Size` | number (bytes) | when serializable | Serialized byte size of the response the client received — the in-band `isError` result the SDK produced, or the JSON-RPC error envelope reconstructed from a raise |
 | `[MCP] Response HTTP Status` | number | HTTP transports only | `200` — protocol-level rejections answer HTTP 200 with the error in the JSON-RPC body. Absent over stdio, which has no HTTP status |
@@ -553,8 +559,27 @@ error's own `code` attribute (an errno/OS string), a classifier-assigned
 network code, or a JSON-RPC code.
 It is omitted for a bare raised exception rather than echoing the type, so its
 presence means "there is a specific known reason." The rest of the structured
-error (`recoverable`, `fingerprint`, privacy-safe `stack_hash`, …) stays on
+error (`recoverable`, privacy-safe `stack_hash`, …) stays on
 `ctx.error`, where a custom event can pick it up.
+
+### Error grouping
+
+`[MCP] Error Fingerprint` is the existing structured error's grouping key:
+the first 12 hexadecimal characters of SHA-256 of `type:normalizedMessage`.
+Normalization replaces UUIDs with `<uuid>`, whole ASCII numbers with `<n>`,
+and double/single-quoted strings with `"<str>"` / `'<str>'`.
+`build_tool_error(fingerprint=...)` supports caller overrides. Empty or absent
+fingerprints are omitted; sanitizing or dropping messages does not suppress them.
+Tools Listed failures and thrown Tool Call Rejected events forward the original
+classified fingerprint. A rejection reports `protocol_error` as its event type,
+but retains the original classified fingerprint. In-band rejections have no
+structured fingerprint and none is invented.
+
+`[MCP] Error Message Normalized` is derived at the shared event boundary:
+`sanitize_error_message` → built-in PII/custom redaction → normalization.
+Any supplied normalized property is ignored. It is omitted when the final
+message is absent, empty, or dropped, and is never derived from raw text
+independently of message redaction.
 
 ### Redacting `[MCP] Error Message`
 
@@ -720,6 +745,8 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Error Code` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — only when a specific code is known |
 | `[MCP] Error HTTP Status` | number | `Tool Call Response` (when the failure carried an HTTP status — the tool's, not the transport's) |
 | `[MCP] Error Message` | string | `Tools Listed`, `Tool Call Response` (failures), `Tool Call Rejected` — after [`sanitize_error_message`](#redacting-mcp-error-message) and [built-in PII redaction](../README.md#privacy-and-redaction) |
+| `[MCP] Error Fingerprint` | string | Existing non-empty structured fingerprint on tool responses, Tools Listed failures, and thrown rejections, even if the message is dropped |
+| `[MCP] Error Message Normalized` | string | Normalization of the final sanitized and redacted error message; absent when it is empty or dropped |
 | `[MCP] Feedback Comment` | string | `Feedback Submitted`, only when `capture_comment=True` and the text survived redaction |
 | `[MCP] Feedback Has Comment` | boolean | `Feedback Submitted` |
 | `[MCP] Feedback Helpful` | boolean | `Feedback Submitted` |

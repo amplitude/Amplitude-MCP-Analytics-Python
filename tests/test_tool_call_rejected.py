@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import pytest
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import Implementation
+from mcp.types import CallToolRequest, Implementation
 
 from amplitude_mcp_analytics import MCPAnalyticsConfig
+from amplitude_mcp_analytics.errors import compute_fingerprint
 from amplitude_mcp_analytics.testing import MockAmplitudeMCPAnalytics
 
 pytestmark = pytest.mark.anyio
@@ -24,6 +26,30 @@ CLIENT = Implementation(name="cursor", version="0.40")
 
 REJECTED = "[MCP] Tool Call Rejected"
 RESPONSE = "[MCP] Tool Call Response"
+
+
+async def test_thrown_pre_dispatch_rejection_preserves_fingerprint_when_message_dropped():
+    analytics = MockAmplitudeMCPAnalytics(
+        server_name="test-mcp", server_version="1.0",
+        config=MCPAnalyticsConfig(sanitize_error_message=lambda _: None),
+    )
+    server = Server("test-mcp")
+
+    async def fail(_):
+        raise ValueError("Unknown tool: missing")
+
+    server.request_handlers[CallToolRequest] = fail
+    analytics.instrument_server(server, user_id="user-1")
+    async with create_connected_server_and_client_session(server, client_info=CLIENT) as client:
+        with pytest.raises(Exception, match="Unknown tool"):
+            await client.call_tool("missing", {})
+    props = analytics.get_events(REJECTED)[0]["event_properties"]
+    assert props["[MCP] Error Type"] == "protocol_error"
+    assert props["[MCP] Error Fingerprint"] == compute_fingerprint(
+        "thrown_exception", "Unknown tool: missing"
+    )
+    assert "[MCP] Error Message" not in props
+    assert "[MCP] Error Message Normalized" not in props
 
 
 def make_harness(
@@ -71,6 +97,8 @@ async def test_emits_for_an_unknown_tool_rejected_before_any_callback() -> None:
     assert props["[MCP] Attempted Tool Name"] == "made_up_tool"
     assert props["[MCP] Rejection Reason"] == "unknown_tool"
     assert props["[MCP] Error Type"] == "protocol_error"
+    assert "[MCP] Error Fingerprint" not in props
+    assert props["[MCP] Error Message Normalized"]
     assert props["[MCP] Is Error"] is True
     assert isinstance(props["[MCP] Error Code"], str)
     assert isinstance(props["[MCP] Response Duration"], int)

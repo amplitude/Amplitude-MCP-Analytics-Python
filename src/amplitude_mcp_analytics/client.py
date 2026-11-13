@@ -693,6 +693,7 @@ class AmplitudeMCPAnalytics:
                 error_message=tool_error.message if tool_error is not None else None,
                 error_code=tool_error.code if tool_error is not None else None,
                 error_type=tool_error.type if tool_error is not None else None,
+                error_fingerprint=tool_error.fingerprint if tool_error is not None else None,
                 sanitize=sanitize,
                 privacy=self._privacy,
             )
@@ -755,6 +756,7 @@ class AmplitudeMCPAnalytics:
                 # sanitize_error_message has had a say over the message.
                 rejection_reason=rejection.reason,
                 error_message=rejection.message,
+                error_fingerprint=rejection.fingerprint,
                 # Pre-dispatch `tools/call` failures are JSON-RPC protocol
                 # errors, so the JSON-RPC code rides `[MCP] Error Code` —
                 # omitted rather than guessed when no code is recoverable,

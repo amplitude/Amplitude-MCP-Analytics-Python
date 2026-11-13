@@ -80,6 +80,7 @@ def emit_tools_listed(
     error_message: str | None = None,
     error_code: str | None = None,
     error_type: str | None = None,
+    error_fingerprint: str | None = None,
     sanitize: ErrorMessageSanitizer | None = None,
     privacy: PrivacyConfig | None = None,
 ) -> None:
@@ -107,6 +108,8 @@ def emit_tools_listed(
         properties[K["error_code"]] = error_code
     if error_type is not None:
         properties[K["error_type"]] = error_type
+    if error_fingerprint:
+        properties[K["error_fingerprint"]] = error_fingerprint
 
     track_server_event(amplitude, ctx, TOOLS_LISTED, properties, _options(privacy))
 
@@ -144,6 +147,8 @@ def emit_tool_call_response(
         if ctx.error.code is not None:
             properties[K["error_code"]] = ctx.error.code
         properties[K["error_type"]] = ctx.error.type
+        if ctx.error.fingerprint:
+            properties[K["error_fingerprint"]] = ctx.error.fingerprint
         # HTTP status attached to the tool's failure (upstream response /
         # HTTP-shaped raised error) — NOT the MCP transport status.
         if ctx.error.http_status is not None:
@@ -161,6 +166,7 @@ def emit_tool_call_rejected(
     error_message: str | None = None,
     error_code: str | None = None,
     error_type: str | None = None,
+    error_fingerprint: str | None = None,
     duration_ms: float | None = None,
     response_size_bytes: int | None = None,
     response_http_status: int | None = None,
@@ -186,6 +192,8 @@ def emit_tool_call_rejected(
         properties[K["error_code"]] = error_code
     if error_type is not None:
         properties[K["error_type"]] = error_type
+    if error_fingerprint:
+        properties[K["error_fingerprint"]] = error_fingerprint
     if duration_ms is not None:
         properties[K["response_duration"]] = round(duration_ms)
     if response_size_bytes is not None:

@@ -100,6 +100,8 @@ class PreDispatchRejection:
     """Structured cause — see :data:`RejectionReason`."""
     json_rpc_code: int | None = None
     """JSON-RPC code, when the SDK still carried it or the prefix yielded it."""
+    fingerprint: str | None = None
+    """Existing classified fingerprint for raised errors only."""
 
 
 def _attribute(
@@ -176,6 +178,7 @@ def classify_pre_dispatch_rejection(
                 else _read_mcp_error_code(classified.message)
             ),
             reason=_attribute(registry_state, classified.message),
+            fingerprint=classified.fingerprint,
         )
 
     # The SDK reports these as resolved `isError` results. Anything that is

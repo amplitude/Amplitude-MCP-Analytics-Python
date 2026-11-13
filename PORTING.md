@@ -39,6 +39,14 @@ worth pulling over, do it as a normal PR with subject
 
 ## Intentional divergences
 
+Error fingerprint and normalized-message emission is ported from Node
+`dfa10f4` (PR #67). Python's existing normalization now uses ASCII number
+and word boundaries to match JavaScript, including for Unicode messages.
+The Python emitters share one module rather than separate event files;
+both use the merged-property redaction boundary for normalized messages.
+No new public exports are needed. As in Node, in-band rejections have no
+fingerprint, while raised pre-dispatch errors retain their classified one.
+
 | Area | Node | Python | Why |
 |---|---|---|---|
 | Integration seam | wraps `server.connect(transport)`; patches the private `Server._requestHandlers` Map; chains `oninitialized`/`onclose` | wraps `Server.run(...)` (one run = one connection); replaces entries in the **public** `request_handlers` dict for ordinary requests; stream proxies match the `initialize` request to its successful response; run teardown = session end | the Python SDK has no `connect(transport)`, and `ServerSession` consumes `initialize` before the server handler registry; transports exist only as message streams |
