@@ -34,8 +34,9 @@ both without special-casing.
 
 Like the Node repo's own vendoring policy: provenance here is for attribution
 and archaeology, not an obligation to track upstream. When a Node change *is*
-worth pulling over, do it as a normal PR with subject
-`chore: port <thing> from Amplitude-MCP-Analytics-Node @ <sha>`.
+worth pulling over, do it as a normal PR titled by user-visible impact (see
+"PR titles set the version" in `AGENTS.md`), and name the upstream commit in
+the PR body: `Ports Amplitude-MCP-Analytics-Node @ <sha>`.
 
 ## Intentional divergences
 

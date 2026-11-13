@@ -93,8 +93,10 @@ divergences. Rules:
   a wire change is a cross-SDK decision.
 - Adapt freely for Python needs; record intentional divergences in the
   `PORTING.md` table in the same PR.
-- When a Node change is worth pulling over, do it as a normal PR with subject
-  `chore: port <thing> from Amplitude-MCP-Analytics-Node @ <sha>`.
+- When a Node change is worth pulling over, do it as a normal PR. Title it by
+  user-visible impact like any other PR (`feat:`, `fix:`, … — a `chore:` port
+  ships no release), and name the upstream commit in the PR body:
+  `Ports Amplitude-MCP-Analytics-Node @ <sha>`.
 - Files that carry a provenance header (e.g. `core/delivery.py`) name their
   upstream source; keep the header accurate when you refresh them.
 
