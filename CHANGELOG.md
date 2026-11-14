@@ -12,6 +12,13 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.7.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.6.0...v0.7.0) (2026-11-14)
+
+
+### Features
+
+* emit error fingerprints and normalized error messages on default events ([5634f28](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/5634f28d41efa20ef15e7fb5b371524260a9f135))
+
 ## [0.6.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.5.0...v0.6.0) (2026-10-15)
 
 
