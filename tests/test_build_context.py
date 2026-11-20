@@ -358,7 +358,7 @@ def test_outside_a_request_frame_the_scope_session_id_feeds_the_anchor() -> None
 def request_frame(rc: Any) -> Iterator[None]:
     """Set the SDK's ambient ``request_ctx`` around a block, the way a live
     handler dispatch does."""
-    from mcp.server.lowlevel.server import request_ctx
+    from amplitude_mcp_analytics.core.mcp import _request_context as request_ctx
 
     token = request_ctx.set(rc)
     try:

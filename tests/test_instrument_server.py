@@ -14,7 +14,11 @@ import logging
 import weakref
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError:
+    pytest.skip("Requires the mcp 1.x FastMCP API", allow_module_level=True)
 from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import Implementation

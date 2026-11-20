@@ -11,8 +11,12 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.memory import create_connected_server_and_client_session
+
+try:
+    from mcp.server.fastmcp import FastMCP
+    from mcp.shared.memory import create_connected_server_and_client_session
+except ModuleNotFoundError:
+    FastMCP = None
 from mcp.types import Implementation
 
 from amplitude_mcp_analytics import (
@@ -213,6 +217,7 @@ def test_caps_a_comment_that_redaction_lengthens() -> None:
     assert "X" not in comment
 
 
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 def test_standalone_callback_uses_the_resolved_name_and_description() -> None:
     from amplitude_mcp_analytics import create_feedback_tool_handler
 
@@ -292,6 +297,7 @@ def test_warns_and_does_nothing_for_a_low_level_server(caplog) -> None:
     assert any("FastMCP" in record.message for record in caplog.records)
 
 
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 def test_skips_a_name_that_is_already_registered_or_invalid(caplog) -> None:
     analytics = MockAmplitudeMCPAnalytics(server_name="test-mcp", server_version="9.9.9")
     mcp = FastMCP("s")
@@ -313,6 +319,7 @@ def test_skips_a_name_that_is_already_registered_or_invalid(caplog) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_lists_the_tool_and_emits_feedback_without_a_tool_call_response() -> None:
     analytics = MockAmplitudeMCPAnalytics(server_name="test-mcp", server_version="9.9.9")
     mcp = FastMCP("s")
@@ -365,6 +372,7 @@ async def test_lists_the_tool_and_emits_feedback_without_a_tool_call_response() 
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_authenticated_feedback_uses_the_server_identity_resolver() -> None:
     from amplitude_mcp_analytics import SetIdentityInput
 

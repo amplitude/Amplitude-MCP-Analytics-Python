@@ -36,8 +36,8 @@ a situation.
    full git history are public. No secrets, API keys, tokens, internal URLs, or
    customer data. A secret committed once lives in history forever.
 5. **Backwards compatibility is the default.** Don't break consumers or force
-   dependency conflicts. Keep dependency constraints wide (the `mcp>=1.16,<2`
-   range is deliberate); don't re-export a dependency's types into our public
+   dependency conflicts. Support mcp 1.16 and up, including 2.x, without a
+   runtime MCP dependency; don't re-export a dependency's types into our public
    API unless we intend to track them.
 6. **Porting is a fork point, not a sync target.** Ported code belongs to
    this repo once copied; there is no obligation to track upstream.

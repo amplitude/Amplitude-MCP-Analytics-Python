@@ -133,6 +133,7 @@ def _is_fastmcp_context(value: Any) -> bool:
     module = cls.__module__
     return cls.__name__ == "Context" and (
         module == "mcp.server.fastmcp" or module.startswith("mcp.server.fastmcp.")
+        or module == "mcp.server.mcpserver" or module.startswith("mcp.server.mcpserver.")
     )
 
 

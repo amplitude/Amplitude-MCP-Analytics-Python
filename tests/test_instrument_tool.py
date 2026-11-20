@@ -18,9 +18,13 @@ from typing import Any
 
 import anyio
 import pytest
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+    from mcp.shared.memory import create_connected_server_and_client_session
+except ModuleNotFoundError:
+    FastMCP = None
 from mcp.server.lowlevel import Server
-from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import CallToolResult, Implementation, TextContent, Tool
 from pydantic import Field
 
@@ -823,6 +827,7 @@ async def test_omits_signature_defaults_the_caller_filled_in() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_fastmcp_call_tool_reports_only_arguments_the_client_sent() -> None:
     # Builtin annotations only, so the tool schema builds on mcp 1.16 as well
     # as current mcp. Enum unwrapping is covered in test_param_capture.
@@ -853,6 +858,7 @@ def _props(analytics: MockAmplitudeMCPAnalytics, index: int = -1) -> dict[str, A
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_call_tool_ignores_filled_defaults_and_keeps_explicit_values() -> None:
     # Explicit False / "asc" would be dropped by the identity fallback, so
     # their presence shows the tools/call names were used.
@@ -917,6 +923,7 @@ async def test_call_tool_ignores_filled_defaults_and_keeps_explicit_values() -> 
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_nested_instrumented_call_does_not_reuse_the_outer_argument_names() -> None:
     analytics = make_mock()
     mcp = FastMCP("test-mcp")
@@ -952,6 +959,7 @@ async def test_nested_instrumented_call_does_not_reuse_the_outer_argument_names(
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_instrumented_helper_inside_uninstrumented_tool_falls_back() -> None:
     analytics = make_mock()
     mcp = FastMCP("test-mcp")
@@ -983,6 +991,7 @@ async def test_instrumented_helper_inside_uninstrumented_tool_falls_back() -> No
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_low_level_call_tool_captures_the_arguments_mapping() -> None:
     analytics = make_mock()
     server = Server("low-level")
@@ -1019,6 +1028,7 @@ async def test_low_level_call_tool_captures_the_arguments_mapping() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(FastMCP is None, reason="Requires mcp 1.x")
 async def test_call_tool_parameter_named_json_uses_the_client_key() -> None:
     analytics = make_mock()
     mcp = FastMCP("test-mcp")
