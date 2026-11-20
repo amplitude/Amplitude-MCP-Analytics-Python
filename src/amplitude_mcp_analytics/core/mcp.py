@@ -12,6 +12,7 @@ import importlib
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import Context, ContextVar, copy_context
+from dataclasses import replace
 from typing import Any, Literal
 
 from ..context.types import McpClientInfo
@@ -220,8 +221,11 @@ def install_v2_observer(
                 if scope.ctx is not None:
                     info = params.get("clientInfo")
                     if isinstance(info, Mapping):
-                        scope.ctx.client = McpClientInfo(
-                            name=info.get("name"), version=info.get("version")
+                        existing = scope.ctx.client or McpClientInfo()
+                        scope.ctx.client = replace(
+                            existing,
+                            name=info.get("name") or existing.name,
+                            version=info.get("version") or existing.version,
                         )
                     scope.ctx.protocol_version = (
                         result.get("protocolVersion") if isinstance(result, dict) else None

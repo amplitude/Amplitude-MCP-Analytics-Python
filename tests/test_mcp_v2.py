@@ -69,6 +69,17 @@ async def test_initialize_uses_negotiated_protocol_version() -> None:
     assert a.get_events(ENDED)[0]["event_properties"]["[MCP] Protocol Version"] == negotiated
 
 
+async def test_initialize_preserves_configured_user_agent() -> None:
+    a = analytics()
+    server = MCPServer("server")
+    a.instrument_server(server, user_id="user-1", client={"user_agent": "configured-agent"})
+    async with Client(server, mode="legacy", client_info=Implementation(name="peer", version="7")):
+        props = a.get_events(INITIALIZED)[0]["event_properties"]
+        assert props["[MCP] Client Name"] == "peer"
+        assert props["[MCP] Client Version"] == "7"
+        assert props["[MCP] User Agent"] == "configured-agent"
+
+
 def analytics(config: MCPAnalyticsConfig | None = None) -> MockAmplitudeMCPAnalytics:
     return MockAmplitudeMCPAnalytics(server_name="server", server_version="1", config=config)
 

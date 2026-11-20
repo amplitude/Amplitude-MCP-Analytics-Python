@@ -35,6 +35,19 @@ def make_analytics() -> MockAmplitudeMCPAnalytics:
 CLIENT = Implementation(name="claude", version="3.0")
 
 
+async def test_initialize_preserves_configured_user_agent() -> None:
+    analytics = make_analytics()
+    server = FastMCP("server")
+    analytics.instrument_server(
+        server, user_id="user-1", client={"user_agent": "configured-agent"},
+    )
+    async with create_connected_server_and_client_session(server._mcp_server, client_info=CLIENT):
+        props = analytics.get_events("[MCP] Session Initialized")[0]["event_properties"]
+        assert props["[MCP] Client Name"] == CLIENT.name
+        assert props["[MCP] Client Version"] == CLIENT.version
+        assert props["[MCP] User Agent"] == "configured-agent"
+
+
 async def test_run_detects_stdio_and_sets_the_server_scope() -> None:
     analytics = make_analytics()
     mcp = FastMCP("test-mcp")
