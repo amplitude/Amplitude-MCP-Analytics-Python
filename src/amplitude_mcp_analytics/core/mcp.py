@@ -161,7 +161,7 @@ def install_v2_observer(
     server: Any,
     *,
     make_scope: Callable[[], ServerScope],
-    on_initialized: Callable[[ServerScope], None],
+    on_initialized: Callable[[ServerScope, str | None], None],
     on_ended: Callable[[ServerScope, float], None],
     on_listed: Callable[[dict[str, Any]], None] | None,
     on_called: Callable[[dict[str, Any]], None] | None,
@@ -227,7 +227,9 @@ def install_v2_observer(
                         result.get("protocolVersion") if isinstance(result, dict) else None
                     )
                 try:
-                    on_initialized(scope)
+                    on_initialized(
+                        scope, scope.ctx.protocol_version if scope.ctx is not None else None,
+                    )
                 except Exception:
                     pass
             return result

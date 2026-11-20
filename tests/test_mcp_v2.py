@@ -19,12 +19,15 @@ if version("mcp").split(".")[0] != "2":
     pytest.skip("Requires mcp 2.x", allow_module_level=True)
 
 from mcp import Client  # noqa: E402
+from mcp.client._memory import InMemoryTransport  # noqa: E402
 from mcp.server import Server  # noqa: E402
 from mcp.server.mcpserver import Context, MCPServer  # noqa: E402
+from mcp.shared.message import SessionMessage  # noqa: E402
 from mcp.types import (  # noqa: E402
     CallToolRequestParams,
     CallToolResult,
     Implementation,
+    JSONRPCRequest,
     ListToolsResult,
     PaginatedRequestParams,
     Tool,
@@ -36,6 +39,34 @@ REJECTED = "[MCP] Tool Call Rejected"
 LISTED = "[MCP] Tools Listed"
 INITIALIZED = "[MCP] Session Initialized"
 ENDED = "[MCP] Session Ended"
+
+
+async def test_initialize_uses_negotiated_protocol_version() -> None:
+    a = analytics()
+    server = MCPServer("server")
+    a.instrument_server(server, user_id="user-1")
+    async with InMemoryTransport(server) as (read, write):
+        await write.send(
+            SessionMessage(
+                JSONRPCRequest(
+                    jsonrpc="2.0",
+                    id=1,
+                    method="initialize",
+                    params={
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "older-client", "version": "1"},
+                    },
+                )
+            )
+        )
+        reply = await read.receive()
+        negotiated = reply.message.result["protocolVersion"]
+        assert negotiated == "2024-11-05"
+        assert (
+            a.get_events(INITIALIZED)[0]["event_properties"]["[MCP] Protocol Version"] == negotiated
+        )
+    assert a.get_events(ENDED)[0]["event_properties"]["[MCP] Protocol Version"] == negotiated
 
 
 def analytics(config: MCPAnalyticsConfig | None = None) -> MockAmplitudeMCPAnalytics:

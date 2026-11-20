@@ -800,7 +800,9 @@ class AmplitudeMCPAnalytics:
             if self.config.autocapture.tool_calls:
                 install_tool_call_hook(low_level, on_tool_call_settled)
 
-        def on_initialized(scope: ServerScope) -> None:
+        def on_initialized(
+            scope: ServerScope, negotiated_protocol_version: str | None = None,
+        ) -> None:
             # `[MCP] Session Initialized` — the handshake only fires on the
             # successful initialize request, including sessionless Streamable
             # HTTP. Resolve the floored
@@ -812,6 +814,8 @@ class AmplitudeMCPAnalytics:
             ctx = resolved_request_ctx(scope)
             if ctx is None:
                 return
+            if negotiated_protocol_version is not None:
+                ctx.protocol_version = negotiated_protocol_version
             scope.ctx = ctx
             self._server_ctx = ctx
             scope.session_start = time.perf_counter()
