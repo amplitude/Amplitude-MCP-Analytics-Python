@@ -16,12 +16,35 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 __all__ = ["install_tools_list_hook"]
 
 _WRAPPED_ATTR = "_amplitude_mcp_tools_list_wrapped"
+
+
+async def observe_tools_list(
+    call: Callable[[], Awaitable[Any]],
+    on_listed: Callable[[dict[str, Any]], None],
+) -> Any:
+    """Observe a tools/list outcome without protocol request types. @internal"""
+    start = time.perf_counter()
+
+    def report(result: Any = None, error: Any = None) -> None:
+        try:
+            on_listed({"result": result, "error": error,
+                       "duration_ms": (time.perf_counter() - start) * 1000})
+        except Exception:
+            pass
+
+    try:
+        result = await call()
+    except BaseException as error:
+        report(error=error)
+        raise
+    report(result=result)
+    return result
 
 
 def install_tools_list_hook(
@@ -56,28 +79,10 @@ def install_tools_list_hook(
         if req is None:
             return await original(req, *args, **kwargs)
 
-        start = time.perf_counter()
+        async def call() -> Any:
+            return await original(req, *args, **kwargs)
 
-        def report(*, result: Any = None, error: Any = None) -> None:
-            try:
-                on_listed(
-                    {
-                        "result": result,
-                        "error": error,
-                        "duration_ms": (time.perf_counter() - start) * 1000,
-                    }
-                )
-            except Exception:
-                # Telemetry is best-effort — never break the tools/list response.
-                pass
-
-        try:
-            result = await original(req, *args, **kwargs)
-        except BaseException as error:
-            report(error=error)
-            raise
-        report(result=result)
-        return result
+        return await observe_tools_list(call, on_listed)
 
     setattr(wrapped, _WRAPPED_ATTR, True)
     handlers[request_type] = wrapped

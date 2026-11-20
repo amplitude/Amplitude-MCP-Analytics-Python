@@ -41,14 +41,24 @@ from .core.feedback_tool import (
     register_feedback_tool_on_server,
 )
 from .core.identity import ServerIdentity
-from .core.mcp import current_request_context, lookup_registered_tool, unwrap_server
+from .core.mcp import (
+    current_request_context,
+    install_v2_observer,
+    is_v2_server,
+    lookup_registered_tool,
+    unwrap_server,
+)
 from .core.run_wrapper import install_run_wrapper
 from .core.serialize import byte_size, payload_byte_size
 from .core.server_scope import ServerScope, current_server_scope
 from .core.tool_call_hook import install_tool_call_hook, was_tool_call_dispatched
 from .core.tool_call_rejection import classify_pre_dispatch_rejection
 from .core.tools_list_hook import install_tools_list_hook
-from .errors import build_tool_error, classify_error, tool_error_result
+from .errors import (
+    build_tool_error,
+    classify_error,
+    tool_error_result,
+)
 from .exceptions import ConfigurationError
 from .tracking.events import (
     emit_session_ended,
@@ -675,11 +685,15 @@ class AmplitudeMCPAnalytics:
                 return
             result, error = outcome["result"], outcome["error"]
             root = getattr(result, "root", result) if result is not None else None
-            tools = getattr(root, "tools", None) or []
-            names = [
-                t_name
+            tools = (
+                root.get("tools") if isinstance(root, dict) else getattr(root, "tools", None)
+            ) or []
+            tool_names = [
+                t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
                 for t in tools
-                if isinstance((t_name := getattr(t, "name", None)), str)
+            ]
+            names = [
+                name for name in tool_names if isinstance(name, str)
             ]
             tool_error = classify_error(error) if error is not None else None
             emit_tools_listed(
@@ -786,7 +800,9 @@ class AmplitudeMCPAnalytics:
             if self.config.autocapture.tool_calls:
                 install_tool_call_hook(low_level, on_tool_call_settled)
 
-        def on_initialized(scope: ServerScope) -> None:
+        def on_initialized(
+            scope: ServerScope, negotiated_protocol_version: str | None = None,
+        ) -> None:
             # `[MCP] Session Initialized` — the handshake only fires on the
             # successful initialize request, including sessionless Streamable
             # HTTP. Resolve the floored
@@ -798,6 +814,8 @@ class AmplitudeMCPAnalytics:
             ctx = resolved_request_ctx(scope)
             if ctx is None:
                 return
+            if negotiated_protocol_version is not None:
+                ctx.protocol_version = negotiated_protocol_version
             scope.ctx = ctx
             self._server_ctx = ctx
             scope.session_start = time.perf_counter()
@@ -811,6 +829,17 @@ class AmplitudeMCPAnalytics:
             emit_session_ended(
                 self._amplitude, scope.ctx, duration_ms=duration_ms, privacy=self._privacy
             )
+
+        if is_v2_server(low_level):
+            install_v2_observer(
+                low_level,
+                make_scope=make_scope,
+                on_initialized=on_initialized,
+                on_ended=on_ended,
+                on_listed=on_tools_listed if self.config.autocapture.tools_listed else None,
+                on_called=on_tool_call_settled if self.config.autocapture.tool_calls else None,
+            )
+            return server
 
         install_run_wrapper(
             low_level,

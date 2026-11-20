@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from typing import Any
 
@@ -78,19 +78,46 @@ def mark_tool_call_dispatched() -> frozenset[str] | None:
     return marker.supplied_keys
 
 
-def _argument_names(req: Any) -> frozenset[str]:
-    """String keys of ``req.params.arguments``. Missing or non-mapping
-    arguments are an empty set: this request sent no names. @internal"""
-    params = getattr(req, "params", None)
-    arguments = getattr(params, "arguments", None)
-    if not isinstance(arguments, Mapping):
-        return frozenset()
-    return frozenset(key for key in arguments if isinstance(key, str))
-
-
 def was_tool_call_dispatched(marker: DispatchMarker | None) -> bool:
     """Whether the request owning ``marker`` reached a tool callback. @internal"""
     return marker is not None and marker.dispatched
+
+
+async def observe_tool_call(
+    name: Any,
+    arguments: Any,
+    call: Callable[[], Awaitable[Any]],
+    on_settled: Callable[[dict[str, Any]], None],
+) -> Any:
+    """Observe one dispatch without depending on protocol request types. @internal"""
+    start = time.perf_counter()
+    marker = DispatchMarker(
+        frozenset(key for key in arguments if isinstance(key, str))
+        if isinstance(arguments, Mapping) else frozenset()
+    )
+    token = _dispatch_marker.set(marker)
+
+    def report(result: Any = None, error: Any = None) -> None:
+        try:
+            on_settled({
+                "tool_name": name if isinstance(name, str) else None,
+                "arguments": arguments,
+                "result": result, "error": error,
+                "duration_ms": (time.perf_counter() - start) * 1000,
+                "marker": marker,
+            })
+        except Exception:
+            pass
+
+    try:
+        result = await call()
+    except BaseException as error:
+        report(error=error)
+        raise
+    finally:
+        _dispatch_marker.reset(token)
+    report(result=result)
+    return result
 
 
 def install_tool_call_hook(
@@ -121,36 +148,15 @@ def install_tool_call_hook(
 
     @functools.wraps(original)
     async def wrapped(req: Any, *args: Any, **kwargs: Any) -> Any:
-        start = time.perf_counter()
-        name = getattr(getattr(req, "params", None), "name", None)
-        tool_name = name if isinstance(name, str) else None
-        marker = DispatchMarker(_argument_names(req))
-        token = _dispatch_marker.set(marker)
+        params = getattr(req, "params", None)
 
-        def report(*, result: Any = None, error: Any = None) -> None:
-            try:
-                on_settled(
-                    {
-                        "tool_name": tool_name,
-                        "result": result,
-                        "error": error,
-                        "duration_ms": (time.perf_counter() - start) * 1000,
-                        "marker": marker,
-                    }
-                )
-            except Exception:
-                # Telemetry is best-effort — never break the tools/call response.
-                pass
+        async def call() -> Any:
+            return await original(req, *args, **kwargs)
 
-        try:
-            result = await original(req, *args, **kwargs)
-        except BaseException as error:
-            report(error=error)
-            raise
-        finally:
-            _dispatch_marker.reset(token)
-        report(result=result)
-        return result
+        return await observe_tool_call(
+            getattr(params, "name", None), getattr(params, "arguments", None),
+            call, on_settled,
+        )
 
     setattr(wrapped, _WRAPPED_ATTR, True)
     handlers[request_type] = wrapped

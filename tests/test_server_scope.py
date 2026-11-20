@@ -19,7 +19,11 @@ from contextlib import AsyncExitStack
 
 import anyio
 import pytest
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError:
+    pytest.skip("Requires the mcp 1.x FastMCP API", allow_module_level=True)
 from mcp.shared.memory import (
     create_client_server_memory_streams,
     create_connected_server_and_client_session,
