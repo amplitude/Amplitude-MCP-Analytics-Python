@@ -33,7 +33,7 @@ from ..types import AmplitudeClientLike
 from ..utils.logger import get_logger
 from .build_context import build_tool_context
 from .identity import ServerIdentity
-from .mcp import lookup_registered_tool
+from .mcp import feedback_annotations, lookup_registered_tool
 from .tool_call_hook import mark_tool_call_dispatched
 
 __all__ = [
@@ -653,7 +653,7 @@ def register_feedback_tool_on_server(
     fastmcp = _as_fastmcp(server)
     if fastmcp is None:
         logger.warning(
-            "AmplitudeMCPAnalytics: register_feedback_tool() requires a FastMCP server. "
+            "AmplitudeMCPAnalytics: register_feedback_tool() requires FastMCP or MCPServer. "
             "A low-level Server has no tool registry to add to, so the feedback tool "
             "was not registered."
         )
@@ -696,14 +696,12 @@ def register_feedback_tool_on_server(
     handler_options["server"] = server
     callback = feedback_tool_callback(deps, handler_options)
     try:
-        from mcp.types import ToolAnnotations
-
         fastmcp.add_tool(
             callback,
             name=resolved.name,
             title=resolved.definition["title"],
             description=resolved.description,
-            annotations=ToolAnnotations(**FEEDBACK_TOOL_ANNOTATIONS),
+            annotations=feedback_annotations(FEEDBACK_TOOL_ANNOTATIONS),
             structured_output=False,
         )
     except Exception as err:  # noqa: BLE001 — registration must not raise

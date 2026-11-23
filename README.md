@@ -11,16 +11,14 @@ Amplitude MCP Analytics SDK — Model Context Protocol server usage tracking for
 ## Install
 
 ```bash
-uv add amplitude-mcp-analytics 'mcp>=1.16,<2'
+uv add amplitude-mcp-analytics 'mcp>=1.16'
 ```
 
 `amplitude-analytics` comes along as a dependency — nothing else to install
 whichever way you construct the client. `mcp` is listed here because your MCP
 server needs it, not because this SDK depends on it: the coupling is
 duck-typed, so the SDK never pins a range against yours. The supported range is
-**`mcp>=1.16,<2`**. The `mcp` 2.x line restructures the server internals; a 2.x
-server is detected and rejected with a clear error rather than silently emitting
-nothing (2.x support is planned).
+**mcp 1.16 and up, including 2.x**.
 
 > **Agent-assisted setup:** the
 > [`instrument-mcp-server` skill](https://github.com/amplitude/builder-skills/tree/main/engineering-skills/skills/instrument-mcp-server)
@@ -58,6 +56,22 @@ async def search(query: str) -> str:
 mcp.run()
 ```
 
+On mcp 2.x, use `MCPServer` instead of `FastMCP`; instrumentation is unchanged:
+
+```python
+from mcp.server.mcpserver import MCPServer
+
+server = MCPServer("my-mcp-server")
+analytics.instrument_server(server)
+
+@server.tool()
+@analytics.instrument_tool(name="echo")
+def echo(text: str) -> str:
+    return text
+
+server.run()
+```
+
 To reuse an Amplitude client you already own, pass it instead of `api_key`:
 
 ```python
@@ -71,11 +85,14 @@ AmplitudeMCPAnalytics(amplitude=Amplitude("KEY"), server_name="...", server_vers
 Two steps, both wrap things you already have — no handler signatures change.
 
 **`instrument_server(server, ...)`** binds the SDK to your MCP server — a
-`FastMCP` or a low-level `mcp.server.lowlevel.Server`. The Python MCP SDK has
-no `connect(transport)`; each `run()` call is one connection, so the SDK wraps
-`run()` instead. It auto-detects the transport from the message stream
-(`stdio` / `streamable-http` / `sse`; override with `transport=`), captures the
-client/server handshake, and emits the default connection events. Call it
+`FastMCP` (1.x), `MCPServer` (2.x), or a low-level `mcp.server.lowlevel.Server`.
+The SDK wraps connection `run()` calls and, on 2.x, also observes requests via
+middleware, including HTTP paths that bypass `run()`. It auto-detects transport
+(`stdio` / `streamable-http` / `sse`; override with `transport=`) and captures
+legacy handshakes. Modern `2026-07-28` requests have no session lifecycle
+events; client information comes from each request. Legacy 2.x HTTP emits
+session-initialized but not session-ended (there is no reliable public teardown
+hook). Call it
 **before** the server runs. It's idempotent and returns the same server.
 
 **`instrument_tool(...)`** wraps a tool handler. The returned function has the
@@ -260,7 +277,7 @@ entirely when never set.
 
 ## Feedback
 
-`register_feedback_tool(server)` adds a `submit_feedback` tool to a FastMCP
+`register_feedback_tool(server)` adds a `submit_feedback` tool to a FastMCP or MCPServer
 server. The agent calls it when the user reacts to a result from this server
 ("thanks, that's it", "that's wrong") or asks to give feedback, and the SDK
 emits `[MCP] Feedback Submitted`. `instrument_server` does not add the tool.

@@ -36,8 +36,10 @@ from .mcp import (
     current_request_context,
     read_request_header,
     request_auth_info,
+    request_client_info,
     request_headers,
     request_meta_value,
+    request_protocol_version,
 )
 
 __all__ = ["build_server_context", "build_tool_context", "resolve_transport_evidence"]
@@ -281,9 +283,7 @@ def _resolve_client_info(
         meta_name = getattr(meta_info, "name", None)
         meta_version = getattr(meta_info, "version", None)
 
-    session = getattr(request_context, "session", None) if request_context is not None else None
-    client_params = getattr(session, "client_params", None)
-    handshake_info = getattr(client_params, "clientInfo", None)
+    handshake_info = request_client_info(request_context)
 
     cached = server_ctx.client
     name = (
@@ -328,10 +328,7 @@ def _resolve_protocol_version(request_context: Any | None) -> str | None:
         from_meta = request_meta_value(request_context, "protocolVersion")
     if isinstance(from_meta, str):
         return from_meta
-    session = getattr(request_context, "session", None) if request_context is not None else None
-    client_params = getattr(session, "client_params", None)
-    negotiated = getattr(client_params, "protocolVersion", None)
-    return negotiated if isinstance(negotiated, str) else None
+    return request_protocol_version(request_context)
 
 
 def build_server_context(

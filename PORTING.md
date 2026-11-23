@@ -79,11 +79,37 @@ fingerprint, while raised pre-dispatch errors retain their classified one.
 
 ## MCP SDK support
 
-Supported: `mcp>=1.16,<2` (seams verified against 1.16.0 and 1.29.0; CI runs a
-compat matrix of the floor and the latest 1.x). The 2.x line restructures the
-server (removes FastMCP, privatizes the handler registry, introduces a
-middleware seam that is still marked provisional upstream) —
-`instrument_server` detects it and raises a `ConfigurationError` naming the
-supported range rather than silently emitting nothing. A 2.x adapter is
-planned as a follow-up inside `core/mcp.py`, the single module allowed to
-touch the `mcp` package.
+Supported: mcp 1.16 and up, including 2.x. The development lock stays on 1.x;
+CI runs the full suite against 1.16.0, 1.30.0, and 2.3.0, including real stdio
+and loopback Streamable HTTP tests. MCP remains a consumer-supplied dependency.
+
+`core/mcp.py` owns the era split and all access to the MCP package:
+
+- **1.x:** unwrap `FastMCP._mcp_server`, wrap public `request_handlers`, read
+  ambient `request_ctx`, and wrap `run()` with handshake stream proxies.
+- **2.x:** unwrap `MCPServer._lowlevel_server`, wrap `run()` for stdio connection
+  scope and teardown, and append one observer to the provisional middleware
+  list. Middleware also covers HTTP paths that bypass `run()`. An SDK-owned
+  request ContextVar makes the injected request context available to tool
+  instrumentation, including handlers without a context argument. Feedback
+  registration uses public `add_tool` on either high-level server.
+  Before each `tools/call`, the adapter best-effort wraps the registered tool's
+  private `fn` once to mark actual callback entry, including sync callbacks in
+  worker threads. This does not claim instrumented parameter names or emit a
+  response event. It distinguishes a tool's raised `MCPError` from failures in
+  validation or resolution before the callback; late registrations are covered.
+  If the private tool registry/callable shape is unavailable, middleware retains
+  its existing best-effort rejection classification without breaking calls.
+
+Both adapters share SDK-independent tool-call and tools-list observers.
+Only decorated handlers emit `[MCP] Tool Call Response`; undecorated tools do
+not. Both eras classify pre-dispatch rejections through the same taxonomy.
+Modern `2026-07-28` requests carry client/protocol information per request and
+emit no session lifecycle events. Legacy 2.x HTTP requests obtain handshake
+information from the public session properties even with a fresh request scope.
+
+| Surface | Node | Python | Why |
+| --- | --- | --- | --- |
+| v2 request interception | wraps the private handler map | provisional middleware plus SDK-owned request ContextVar | Python 2.x HTTP bypasses `Server.run`; middleware is the common request seam, including initialize |
+| Legacy v2 HTTP teardown | connection lifecycle instrumentation | session-initialized, but no session-ended when requests bypass `run()` | no reliable public per-session teardown hook; do not fabricate an ended event |
+| v2 high-level server / feedback | `McpServer` / `registerTool` | `MCPServer._lowlevel_server` / public `add_tool` | native server APIs differ; low-level Python servers still warn and no-op for feedback registration |

@@ -50,7 +50,7 @@ requires-dist = [{ name = "amplitude-analytics", specifier = ">=1.2" }]
 dev = [
     { name = "anyio", specifier = ">=4.0" },
     { name = "certifi", specifier = ">=2026.10.19" },
-    { name = "mcp", specifier = ">=1.16,<2" },
+    { name = "mcp", specifier = ">=1.16" },
     { name = "pyright", specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
