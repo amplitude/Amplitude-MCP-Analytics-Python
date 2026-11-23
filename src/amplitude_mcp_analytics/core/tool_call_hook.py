@@ -42,7 +42,7 @@ _WRAPPED_ATTR = "_amplitude_mcp_tool_call_wrapped"
 
 class DispatchMarker:
     """Mutable per-``tools/call`` flag: did the request reach an
-    ``instrument_tool``-wrapped callback, and which argument names did the
+    observed tool callback, and which argument names did the
     client send? @internal"""
 
     __slots__ = ("dispatched", "supplied_claimed", "supplied_keys")
@@ -76,6 +76,13 @@ def mark_tool_call_dispatched() -> frozenset[str] | None:
         return None
     marker.supplied_claimed = True
     return marker.supplied_keys
+
+
+def mark_tool_callback_entered() -> None:
+    """Mark callback entry without claiming argument names. @internal"""
+    marker = _dispatch_marker.get()
+    if marker is not None:
+        marker.dispatched = True
 
 
 def was_tool_call_dispatched(marker: DispatchMarker | None) -> bool:

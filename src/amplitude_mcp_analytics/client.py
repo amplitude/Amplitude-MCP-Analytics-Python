@@ -833,6 +833,7 @@ class AmplitudeMCPAnalytics:
         if is_v2_server(low_level):
             install_v2_observer(
                 low_level,
+                tool_manager=tool_manager,
                 make_scope=make_scope,
                 on_initialized=on_initialized,
                 on_ended=on_ended,

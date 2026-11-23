@@ -93,6 +93,13 @@ and loopback Streamable HTTP tests. MCP remains a consumer-supplied dependency.
   request ContextVar makes the injected request context available to tool
   instrumentation, including handlers without a context argument. Feedback
   registration uses public `add_tool` on either high-level server.
+  Before each `tools/call`, the adapter best-effort wraps the registered tool's
+  private `fn` once to mark actual callback entry, including sync callbacks in
+  worker threads. This does not claim instrumented parameter names or emit a
+  response event. It distinguishes a tool's raised `MCPError` from failures in
+  validation or resolution before the callback; late registrations are covered.
+  If the private tool registry/callable shape is unavailable, middleware retains
+  its existing best-effort rejection classification without breaking calls.
 
 Both adapters share SDK-independent tool-call and tools-list observers.
 Only decorated handlers emit `[MCP] Tool Call Response`; undecorated tools do

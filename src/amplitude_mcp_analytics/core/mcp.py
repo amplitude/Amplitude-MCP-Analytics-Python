@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import inspect
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import Context, ContextVar, copy_context
@@ -18,7 +19,7 @@ from typing import Any, Literal
 from ..context.types import McpClientInfo
 from ..exceptions import ConfigurationError
 from .server_scope import ServerScope, current_server_scope, scope_var
-from .tool_call_hook import observe_tool_call
+from .tool_call_hook import mark_tool_callback_entered, observe_tool_call
 from .tools_list_hook import observe_tools_list
 
 __all__ = [
@@ -158,9 +159,39 @@ class _ScopedReadStream:
         return getattr(self._stream, name)
 
 
+def _wrap_v2_tool_callback(tool_manager: Any, name: Any) -> None:
+    try:
+        get_tool = getattr(tool_manager, "get_tool", None)
+        if not callable(get_tool) or not isinstance(name, str):
+            return
+        tool: Any = get_tool(name)
+        original = getattr(tool, "fn", None)
+        marker = "_amplitude_mcp_callback_wrapped"
+        if not callable(original) or getattr(original, marker, False):
+            return
+        wrapped: Callable[..., Any]
+        if inspect.iscoroutinefunction(original):
+            @functools.wraps(original)
+            async def wrapped_async(*args: Any, **kwargs: Any) -> Any:
+                mark_tool_callback_entered()
+                return await original(*args, **kwargs)
+            wrapped = wrapped_async
+        else:
+            @functools.wraps(original)
+            def wrapped_sync(*args: Any, **kwargs: Any) -> Any:
+                mark_tool_callback_entered()
+                return original(*args, **kwargs)
+            wrapped = wrapped_sync
+        setattr(wrapped, marker, True)
+        tool.fn = wrapped
+    except Exception:
+        pass
+
+
 def install_v2_observer(
     server: Any,
     *,
+    tool_manager: Any | None,
     make_scope: Callable[[], ServerScope],
     on_initialized: Callable[[ServerScope, str | None], None],
     on_ended: Callable[[ServerScope, float], None],
@@ -210,6 +241,7 @@ def install_v2_observer(
                 scope.transport_resolved = True
             params = ctx.params if isinstance(ctx.params, Mapping) else {}
             if ctx.method == "tools/call" and on_called is not None:
+                _wrap_v2_tool_callback(tool_manager, params.get("name"))
                 return await observe_tool_call(
                     params.get("name"), params.get("arguments"),
                     lambda: call_next(ctx), on_called,
