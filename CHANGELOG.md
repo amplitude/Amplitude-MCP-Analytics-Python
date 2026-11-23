@@ -12,6 +12,13 @@ recorded in `.release-please-manifest.json`. There is no `v0.1.0` tag and no
 `0.1.0` distribution; `0.2.0` is this package's first published version, and it
 contains everything described under both headings.
 
+## [0.8.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.7.0...v0.8.0) (2026-11-23)
+
+
+### Features
+
+* support mcp 2.x servers alongside 1.x ([#25](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/issues/25)) ([e4de60a](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/commit/e4de60ab5cc9b6484dfbb57af349d646afe78401))
+
 ## [0.7.0](https://github.com/amplitude/Amplitude-MCP-Analytics-Python/compare/v0.6.0...v0.7.0) (2026-11-14)
 
 
