@@ -15,6 +15,13 @@ _NAME_FAMILIES: dict[str, tuple[str, str | None]] = {
     "cursor": ("cursor", None),
     "cursor-vscode": ("cursor", "vscode"),
     "openai-mcp": ("chatgpt", None),
+    "cline": ("cline", None),
+    "gemini-cli-mcp-client": ("gemini-cli", None),
+    "opencode": ("opencode", None),
+    "roo code": ("roo-code", None),
+    "visual studio code": ("vscode", None),
+    "code - oss": ("vscode", None),
+    "zed": ("zed", None),
 }
 _UA_FAMILIES = {
     "claude-code": "claude-code",
@@ -108,7 +115,7 @@ def _match_user_agent(value: str | None) -> tuple[str | None, str | None]:
 
 def resolve_client_family(
     client: McpClientInfo,
-) -> tuple[str | None, str | None, _ClientFamilySource]:
+) -> tuple[str, str | None, _ClientFamilySource]:
     """Lower family and surface without changing any raw client fields. @internal"""
     name_family, name_surface = _match_name(client_string(client.name))
     ua_family, ua_surface = _match_user_agent(client_string(client.user_agent))
@@ -117,4 +124,4 @@ def resolve_client_family(
         return name_family, surface, "client-name"
     if ua_family is not None:
         return ua_family, ua_surface, "user-agent"
-    return None, None, "none"
+    return "Other", None, "none"

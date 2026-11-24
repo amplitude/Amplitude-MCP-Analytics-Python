@@ -32,6 +32,7 @@ def ctx_to_amplitude_fields(ctx: McpServerContext) -> AmplitudeFields:
         "session_id": ctx.anchor.value if ctx.anchor.type == "session-id" else NO_SESSION,
         "client_name": client_string(client.name) or UNKNOWN,
         "client_name_source": client_name_source(client),
+        "client_family": family,
         "client_family_source": family_source,
         "server_name": ctx.server.name,
         "transport": ctx.transport,
@@ -42,7 +43,6 @@ def ctx_to_amplitude_fields(ctx: McpServerContext) -> AmplitudeFields:
         ("client_version", client_string(client.version)),
         ("user_agent", client_string(client.user_agent)),
         ("oauth_client_id", client_string(client.oauth_client_id)),
-        ("client_family", family),
         ("client_surface", surface),
         ("protocol_version", client_string(ctx.protocol_version)),
     ):

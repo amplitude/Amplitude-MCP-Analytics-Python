@@ -159,11 +159,18 @@ events built from manual contexts use the same rules.
 | `chatgpt` | `openai-mcp` | `openai-mcp/<version>` | |
 | `codex` | `codex-mcp-client` | `codex-mcp-client/<version>` | |
 | `cursor` | `Cursor`, `cursor-vscode` | `Cursor/<version>` | `vscode` from `cursor-vscode` |
+| `cline` | `Cline` | | |
+| `gemini-cli` | `gemini-cli-mcp-client` | | |
+| `opencode` | `opencode` | | |
+| `roo-code` | `Roo Code` | | |
+| `vscode` | `Visual Studio Code`, `Code - OSS` | | |
+| `zed` | `Zed` | | |
 
 The detector recognizes the `(via mcp-remote <version>)` suffix on client
-names. Generic runtime User-Agents such as `python-httpx`, `node`, and
-`undici` provide no family or surface. Some clients share a name across
-surfaces, so a family may be available when a surface is unknown.
+names. When neither signal identifies a recognized family, the SDK emits
+`Other` with family source `none`. Generic runtime User-Agents such as
+`python-httpx`, `node`, and `undici` do not identify a product. The SDK
+omits surface when it cannot determine where the client runs.
 
 ## Shared properties
 
@@ -177,7 +184,7 @@ properties:
 | `[MCP] Client Name` | string | always | MCP client name from the per-request resolver, namespaced/legacy `_meta`, or handshake; `unknown` when unavailable |
 | `[MCP] Client Version` | string | when known | MCP client version, same sources as the name |
 | `[MCP] Client Name Source` | string | always | Origin of the raw name: `host`, `oauth` (explicitly tagged), `request-metadata`, `handshake`, or `none` |
-| `[MCP] Client Family` | string | when recognized | `claude`, `claude-code`, `chatgpt`, `codex`, or `cursor` |
+| `[MCP] Client Family` | string | always | A recognized family from the table above, or `Other` |
 | `[MCP] Client Surface` | string | when identified | `cli`, `desktop`, or `vscode` |
 | `[MCP] Client Family Source` | string | always | `client-name`, `user-agent`, or `none` |
 | `[MCP] OAuth Client ID` | string | when authenticated or resolved | OAuth client registration id for this request; never folded into the client name |
@@ -773,7 +780,7 @@ default events plus custom events emitted through `track_server_event` /
 | `[MCP] Anchor Type` | string | All |
 | `[MCP] Attempted Tool Name` | string | `Tool Call Rejected` |
 | `[MCP] Auth Type` | string | All (when configured) |
-| `[MCP] Client Family` | string | All (when recognized) |
+| `[MCP] Client Family` | string | All |
 | `[MCP] Client Family Source` | string | All |
 | `[MCP] Client Name` | string | All |
 | `[MCP] Client Name Source` | string | All |

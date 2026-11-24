@@ -46,6 +46,7 @@ class TestCtxToAmplitudeFields:
                 "session_id": "no-session",
                 "client_name": "unknown",
                 "client_name_source": "none",
+                "client_family": "Other",
                 "client_family_source": "none",
                 "server_name": "my-server",
                 "transport": "stdio",
