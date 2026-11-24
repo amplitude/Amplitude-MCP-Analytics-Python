@@ -803,10 +803,21 @@ class AmplitudeMCPAnalytics:
             ctx = resolved_request_ctx(scope, request_context)
             if ctx is None:
                 return
-            # Retain only connection-level client and protocol signals for later requests.
+            # Keep request-local attribution out of the connection fallback.
             scope.ctx = replace(
                 ctx, client=scope.ctx.client, protocol_version=scope.ctx.protocol_version,
             )
+            if scope.transport_persists:
+                peer = ctx.client or McpClientInfo()
+                scope.session_end_ctx = replace(
+                    scope.ctx,
+                    client=replace(
+                        scope.ctx.client or McpClientInfo(),
+                        name=peer.name,
+                        version=peer.version,
+                        name_source=peer.name_source,
+                    ),
+                )
             self._server_ctx = scope.ctx
             scope.session_start = time.perf_counter()
             emit_session_initialized(self._amplitude, ctx, self._privacy)
@@ -814,10 +825,10 @@ class AmplitudeMCPAnalytics:
         def on_ended(scope: ServerScope, duration_ms: float) -> None:
             # `[MCP] Session Ended` on run teardown — only when a session was
             # initialized and the run's transport persisted beyond one request.
-            if scope.ctx is None:
+            if scope.session_end_ctx is None:
                 return
             emit_session_ended(
-                self._amplitude, scope.ctx, duration_ms=duration_ms, privacy=self._privacy
+                self._amplitude, scope.session_end_ctx, duration_ms=duration_ms, privacy=self._privacy
             )
 
         if is_v2_server(low_level):
