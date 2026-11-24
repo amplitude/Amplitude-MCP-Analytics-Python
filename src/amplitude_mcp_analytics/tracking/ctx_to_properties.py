@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..context.types import McpServerContext, McpToolContext
+from ..context.client_attribution import client_name_source, client_string, resolve_client_family
+from ..context.types import McpClientInfo, McpServerContext, McpToolContext
 from .constants import EVENT_PROPERTY_KEYS, NO_SESSION, UNKNOWN
 from .sanitize_error_message import apply_sanitizer
 from .types import AmplitudeFields, DefaultServerFields, DefaultToolFields
@@ -25,25 +26,32 @@ def ctx_to_amplitude_fields(ctx: McpServerContext) -> AmplitudeFields:
     shared by every event the SDK emits. Server-scope events consume this
     directly; tool-scope events go through
     :func:`ctx_to_amplitude_fields_for_tool` which extends the result."""
+    client = ctx.client if ctx.client is not None else McpClientInfo()
+    family, surface, family_source = resolve_client_family(client)
     event_fields: DefaultServerFields = {
         "session_id": ctx.anchor.value if ctx.anchor.type == "session-id" else NO_SESSION,
-        "client_name": (ctx.client.name if ctx.client and ctx.client.name else UNKNOWN),
-        "user_agent": (ctx.client.user_agent if ctx.client and ctx.client.user_agent else UNKNOWN),
+        "client_name": client_string(client.name) or UNKNOWN,
+        "client_name_source": client_name_source(client),
+        "client_family": family,
+        "client_family_source": family_source,
         "server_name": ctx.server.name,
         "transport": ctx.transport,
         "anchor_type": ctx.anchor.type,
     }
 
-    if ctx.client is not None and ctx.client.version is not None:
-        event_fields["client_version"] = ctx.client.version
-    if ctx.client is not None and ctx.client.oauth_client_id is not None:
-        event_fields["oauth_client_id"] = ctx.client.oauth_client_id
+    for key, value in (
+        ("client_version", client_string(client.version)),
+        ("user_agent", client_string(client.user_agent)),
+        ("oauth_client_id", client_string(client.oauth_client_id)),
+        ("client_surface", surface),
+        ("protocol_version", client_string(ctx.protocol_version)),
+    ):
+        if value is not None:
+            event_fields[key] = value
     if ctx.server.version is not None:
         event_fields["server_version"] = ctx.server.version
     if ctx.server.type is not None:
         event_fields["server_type"] = ctx.server.type
-    if ctx.protocol_version is not None:
-        event_fields["protocol_version"] = ctx.protocol_version
     if ctx.auth_type is not None:
         event_fields["auth_type"] = ctx.auth_type
 

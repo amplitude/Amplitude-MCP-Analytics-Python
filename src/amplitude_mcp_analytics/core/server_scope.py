@@ -40,6 +40,9 @@ class ServerScope:
     """Handshake timestamp (``time.perf_counter()`` seconds) — doubles as the
     "a session is active" flag for THIS run's transport."""
 
+    session_end_ctx: McpServerContext | None = None
+    """Teardown telemetry context, never used for request attribution."""
+
     captured_session_id: str | None = None
     """Session id observed on the wire (``mcp-session-id`` header) — the
     streamable-http initialize POST carries none (the server mints the id in

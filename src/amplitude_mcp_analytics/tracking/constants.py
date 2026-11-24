@@ -66,6 +66,10 @@ EVENT_PROPERTY_KEYS: dict[str, str] = {
     # server-scope reserved fields
     "session_id": "[MCP] Session ID",
     "client_name": "[MCP] Client Name",
+    "client_name_source": "[MCP] Client Name Source",
+    "client_family_source": "[MCP] Client Family Source",
+    "client_family": "[MCP] Client Family",
+    "client_surface": "[MCP] Client Surface",
     "client_version": "[MCP] Client Version",
     "oauth_client_id": "[MCP] OAuth Client ID",
     "user_agent": "[MCP] User Agent",

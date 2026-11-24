@@ -19,6 +19,13 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
+from ..context.client_attribution import (
+    client_field,
+    client_name_source,
+    client_string,
+    read_client_identity,
+    select_client_identity,
+)
 from ..context.factory import create_server_context, create_tool_context
 from ..context.types import (
     ClientInfoResolver,
@@ -265,75 +272,47 @@ def _resolve_client_info(
                 )
 
     def host_value(name: str) -> str | None:
-        value = (
-            from_host.get(name)
-            if isinstance(from_host, Mapping)
-            else getattr(from_host, name, None)
-        )
-        return value if isinstance(value, str) and value != "" else None
+        return client_string(client_field(from_host, name))
 
-    meta_info = request_meta_value(request_context, _META_CLIENT_INFO)
-    if meta_info is None:
-        meta_info = request_meta_value(request_context, "clientInfo")
-    meta_name = meta_version = None
-    if isinstance(meta_info, dict):
-        meta_name = meta_info.get("name")
-        meta_version = meta_info.get("version")
-    elif meta_info is not None:
-        meta_name = getattr(meta_info, "name", None)
-        meta_version = getattr(meta_info, "version", None)
-
-    handshake_info = request_client_info(request_context)
-
-    cached = server_ctx.client
-    name = (
-        host_value("name")
-        or meta_name
-        or getattr(handshake_info, "name", None)
-        or (cached.name if cached else None)
-    )
-    version = (
-        host_value("version")
-        or meta_version
-        or getattr(handshake_info, "version", None)
-        or (cached.version if cached else None)
+    connection_client = server_ctx.client
+    identity = select_client_identity(
+        read_client_identity(from_host, "oauth" if host_value("name_source") == "oauth" else "host"),
+        read_client_identity(
+            request_meta_value(request_context, _META_CLIENT_INFO), "request-metadata"
+        ),
+        read_client_identity(request_meta_value(request_context, "clientInfo"), "request-metadata"),
+        read_client_identity(request_client_info(request_context), "handshake"),
+        read_client_identity(connection_client, client_name_source(connection_client)),
     )
     user_agent = (
         host_value("user_agent")
-        or read_request_header(request_context, "user-agent")
-        or (cached.user_agent if cached else None)
+        or client_string(read_request_header(request_context, "user-agent"))
+        or client_string(client_field(connection_client, "user_agent"))
     )
     client_id = auth_info.get("client_id") if auth_info is not None else None
-    oauth_client_id = host_value("oauth_client_id") or (
-        client_id if isinstance(client_id, str) and client_id != "" else None
-    )
     return McpClientInfo(
-        name=name,
-        version=version,
+        name=identity.name,
+        version=identity.version,
+        name_source=identity.name_source,
         user_agent=user_agent,
-        oauth_client_id=oauth_client_id,
+        oauth_client_id=host_value("oauth_client_id") or client_string(client_id),
     )
 
 
 def _resolve_protocol_version(request_context: Any | None) -> str | None:
-    """Negotiated protocol version for one request: the
-    ``MCP-Protocol-Version`` header (HTTP), else ``_meta.protocolVersion``
-    (stateless), else the session's negotiated value. ``None`` over stdio
-    (carried at the handshake). @internal"""
-    from_header = read_request_header(request_context, "mcp-protocol-version")
-    if from_header is not None:
-        return from_header
-    from_meta = request_meta_value(request_context, _META_PROTOCOL_VERSION)
-    if from_meta is None:
-        from_meta = request_meta_value(request_context, "protocolVersion")
-    if isinstance(from_meta, str):
-        return from_meta
-    return request_protocol_version(request_context)
+    """Protocol version from the request or the upstream request context. @internal"""
+    return (
+        client_string(read_request_header(request_context, "mcp-protocol-version"))
+        or client_string(request_meta_value(request_context, _META_PROTOCOL_VERSION))
+        or client_string(request_meta_value(request_context, "protocolVersion"))
+        or request_protocol_version(request_context)
+    )
 
 
 def build_server_context(
     server_ctx: McpServerContext,
     *,
+    request_context: Any | None = None,
     scope_session_id: str | None = None,
     resolve_identity: IdentityResolver | None = None,
     resolve_client_info: ClientInfoResolver | None = None,
@@ -345,7 +324,8 @@ def build_server_context(
     any tool scope. Reads the SDK's ambient ``request_ctx``; degrades to the
     scope's own values outside a request frame. ``transport`` is inherited from
     the server scope. @internal"""
-    request_context = current_request_context()
+    if request_context is None:
+        request_context = current_request_context()
 
     resolved_anchor = _resolve_anchor(
         server_ctx.transport,
@@ -367,7 +347,9 @@ def build_server_context(
         server=server_ctx.server,
         transport=server_ctx.transport,
         anchor=resolved_anchor,
-        protocol_version=_resolve_protocol_version(request_context) or server_ctx.protocol_version,
+        protocol_version=(
+            _resolve_protocol_version(request_context) or client_string(server_ctx.protocol_version)
+        ),
         identity=resolved.identity,
         tenant=resolved.tenant if resolved.tenant is not None else server_ctx.tenant,
         client=_resolve_client_info(

@@ -21,10 +21,11 @@ This wrapper does three jobs:
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from types import SimpleNamespace
 from typing import Any
 
-from ..context.types import McpClientInfo
+from ..context.client_attribution import client_string, record_handshake
 from .build_context import resolve_transport_evidence
 from .server_scope import ServerScope, scope_var
 
@@ -121,11 +122,11 @@ class _HandshakeObserver:
     def __init__(
         self,
         scope: ServerScope,
-        on_initialized: Callable[[ServerScope], None],
+        on_initialized: Callable[[ServerScope, Any], None],
     ) -> None:
         self._scope = scope
         self._on_initialized = on_initialized
-        self._initialize_request_ids: set[Any] = set()
+        self._pending: dict[Any, tuple[Any, SimpleNamespace]] = {}
 
     def observe(self, item: Any) -> None:
         message = getattr(item, "message", None)
@@ -166,46 +167,25 @@ class _HandshakeObserver:
         message = getattr(item, "message", None)
         root = getattr(message, "root", None)
         response_id = getattr(root, "id", None)
-        if response_id not in self._initialize_request_ids:
+        pending = self._pending.pop(response_id, None)
+        result = getattr(root, "result", None)
+        if pending is None or not isinstance(result, Mapping) or self._scope.ctx is None:
             return
-        self._initialize_request_ids.discard(response_id)
-        if getattr(root, "error", None) is None:
-            self._on_initialized(self._scope)
+        client_info, request_context = pending
+        record_handshake(self._scope.ctx, client_info, client_string(result.get("protocolVersion")))
+        self._on_initialized(self._scope, request_context)
 
     def _capture_initialize(self, root: Any, request: Any) -> None:
-        """Capture the handshake ``clientInfo`` / ``protocolVersion`` onto the
-        server scope (the per-request ``_meta`` values still win later)."""
-        scope = self._scope
-        if scope.ctx is None:
-            return
+        """Stage request evidence until the matching initialize succeeds."""
         params = getattr(root, "params", None)
         if not isinstance(params, dict):
             return
         request_id = getattr(root, "id", None)
         if request_id is not None:
-            self._initialize_request_ids.add(request_id)
-        client_info = params.get("clientInfo")
-        existing = scope.ctx.client
-        if isinstance(client_info, dict):
-            scope.ctx.client = McpClientInfo(
-                name=client_info.get("name") or (existing.name if existing else None),
-                version=client_info.get("version") or (existing.version if existing else None),
-                user_agent=(existing.user_agent if existing else None),
+            self._pending[request_id] = (
+                params.get("clientInfo"),
+                SimpleNamespace(request=request, meta=params.get("_meta")),
             )
-        user_agent = None
-        headers = getattr(request, "headers", None)
-        if headers is not None:
-            try:
-                user_agent = headers.get("user-agent")
-            except Exception:
-                user_agent = None
-        if isinstance(user_agent, str) and user_agent != "":
-            client = scope.ctx.client or McpClientInfo()
-            client.user_agent = user_agent
-            scope.ctx.client = client
-        protocol_version = params.get("protocolVersion")
-        if isinstance(protocol_version, str) and protocol_version != "":
-            scope.ctx.protocol_version = protocol_version
 
 
 def install_run_wrapper(
@@ -213,7 +193,7 @@ def install_run_wrapper(
     *,
     make_scope: Callable[[], ServerScope],
     install_hooks: Callable[[], None],
-    on_initialized: Callable[[ServerScope], None],
+    on_initialized: Callable[[ServerScope, Any], None],
     on_ended: Callable[[ServerScope, float], None],
 ) -> None:
     """Replace ``low_level_server.run`` with the instrumented wrapper.
@@ -222,8 +202,7 @@ def install_run_wrapper(
     - ``make_scope`` builds a fresh per-run scope (from the binding's opts).
     - ``install_hooks`` (re-)asserts the request-handler surgery; called on
       every run so handlers registered after ``instrument_server`` are caught.
-    - ``on_initialized`` fires at ``notifications/initialized`` (never on
-      stateless runs).
+    - ``on_initialized`` fires after the successful initialize response.
     - ``on_ended`` fires when the run settles with an initialized session,
       with the session duration in milliseconds.
     """
@@ -241,9 +220,8 @@ def install_run_wrapper(
         scope = make_scope()
         install_hooks()
 
-        # Stateless runs never handshake: the manager spins one run per HTTP
-        # request, so session lifecycle is meaningless there — no session
-        # events are emitted for this run.
+        # Each stateless run handles one request, so an initialize POST can
+        # report its handshake, but the run teardown does not end a session.
         stateless = bool(kwargs.get("stateless", args[1] if len(args) >= 2 else False))
         scope.transport_persists = not stateless
         observer = _HandshakeObserver(scope, on_initialized)

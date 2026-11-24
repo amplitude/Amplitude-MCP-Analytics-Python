@@ -29,6 +29,8 @@ from mcp.types import Implementation
 
 from amplitude_mcp_analytics import (
     MCPAnalyticsConfig,
+    McpClientInfo,
+    ResolveClientInfoInput,
     SetIdentityInput,
 )
 from amplitude_mcp_analytics.testing import MockAmplitudeMCPAnalytics
@@ -114,6 +116,42 @@ async def test_emits_session_ended_once_with_a_duration_on_close() -> None:
     assert len(ended) == 1
     duration = ended[0]["event_properties"]["[MCP] Session Duration"]
     assert isinstance(duration, int) and duration >= 0
+
+
+async def test_session_end_retains_the_resolved_identity_without_leaking_to_requests() -> None:
+    analytics = make_analytics()
+    mcp = make_fastmcp()
+    resolve_initialize = True
+
+    def resolve_client_info(_request: ResolveClientInfoInput) -> McpClientInfo | None:
+        if resolve_initialize:
+            return McpClientInfo(
+                name="openai-mcp", version="2", name_source="oauth", oauth_client_id="registration",
+            )
+        return None
+
+    analytics.instrument_server(mcp, user_id="user-1", resolve_client_info=resolve_client_info)
+    async with create_connected_server_and_client_session(
+        mcp._mcp_server, client_info=CLIENT
+    ) as client:
+        resolve_initialize = False
+        await client.list_tools()
+
+    started = analytics.get_events("[MCP] Session Initialized")[0]["event_properties"]
+    tools = analytics.get_events("[MCP] Tools Listed")[0]["event_properties"]
+    ended = analytics.get_events("[MCP] Session Ended")[0]["event_properties"]
+    assert started["[MCP] OAuth Client ID"] == "registration"
+    assert tools["[MCP] Client Name"] == "cursor"
+    assert tools["[MCP] Client Name Source"] == "handshake"
+    assert "[MCP] OAuth Client ID" not in tools
+    assert "[MCP] OAuth Client ID" not in ended
+    for key, value in {
+        "[MCP] Client Name": "openai-mcp",
+        "[MCP] Client Version": "2",
+        "[MCP] Client Name Source": "oauth",
+        "[MCP] Client Family": "chatgpt",
+    }.items():
+        assert started[key] == ended[key] == value
 
 
 async def test_no_session_ended_when_no_session_was_initialized() -> None:
