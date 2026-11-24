@@ -115,6 +115,10 @@ def request_client_info(ctx: Any) -> Any:
 
 def request_protocol_version(ctx: Any) -> str | None:
     """Protocol version exposed by the SDK, excluding the client's offer. @internal"""
+    # The v2 initialize middleware context can still hold the default version.
+    # The matching initialize result supplies the authoritative fallback.
+    if getattr(ctx, "method", None) == "initialize":
+        return None
     session = getattr(ctx, "session", None)
     return (
         client_string(getattr(ctx, "protocol_version", None))
