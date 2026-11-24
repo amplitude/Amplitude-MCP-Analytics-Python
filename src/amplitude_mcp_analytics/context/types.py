@@ -106,6 +106,10 @@ claims. The SDK never guesses — the consumer specifies which claim maps to
 which field."""
 
 
+_ClientNameSource = Literal["host", "oauth", "request-metadata", "handshake", "none"]
+_ClientFamilySource = Literal["client-name", "user-agent", "none"]
+
+
 @dataclass
 class McpClientInfo:
     """MCP client info — a dimension, NOT identity."""
@@ -118,6 +122,8 @@ class McpClientInfo:
     oauth_client_id: str | None = None
     """OAuth ``client_id`` for this request. Kept separate from ``name``
     because it identifies a client registration, not a product."""
+    name_source: _ClientNameSource | None = None
+    """Origin of the raw name. Host-supplied names default to ``"host"``."""
 
 
 @dataclass(frozen=True)
@@ -133,8 +139,8 @@ class ResolveClientInfoInput:
 ClientInfoResolver = Callable[
     [ResolveClientInfoInput], McpClientInfo | Mapping[str, str | None] | None
 ]
-"""Resolve MCP client info per request. Return only the fields known; empty
-or missing fields fall through to the SDK's own sources."""
+"""Resolve MCP client info per request. A name and its version are selected
+together. Set ``name_source="oauth"`` only for a name explicitly derived from OAuth."""
 
 
 @dataclass

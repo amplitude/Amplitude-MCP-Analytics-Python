@@ -13,10 +13,9 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import Context, ContextVar, copy_context
-from dataclasses import replace
 from typing import Any, Literal
 
-from ..context.types import McpClientInfo
+from ..context.client_attribution import client_string, record_handshake
 from ..exceptions import ConfigurationError
 from .server_scope import ServerScope, current_server_scope, scope_var
 from .tool_call_hook import mark_tool_callback_entered, observe_tool_call
@@ -109,22 +108,18 @@ def is_v2_server(server: Any) -> bool:
 
 
 def request_client_info(ctx: Any) -> Any:
-    """Handshake or envelope client implementation, when supplied. @internal"""
+    """Client identity from the upstream MCP session, when supplied. @internal"""
     params = getattr(getattr(ctx, "session", None), "client_params", None)
     return getattr(params, "client_info", None) or getattr(params, "clientInfo", None)
 
 
 def request_protocol_version(ctx: Any) -> str | None:
-    """Protocol version from either era's request/session context. @internal"""
+    """Protocol version exposed by the SDK, excluding the client's offer. @internal"""
     session = getattr(ctx, "session", None)
-    params = getattr(session, "client_params", None)
-    value = (
-        getattr(ctx, "protocol_version", None)
-        or getattr(session, "protocol_version", None)
-        or getattr(params, "protocol_version", None)
-        or getattr(params, "protocolVersion", None)
+    return (
+        client_string(getattr(ctx, "protocol_version", None))
+        or client_string(getattr(session, "protocol_version", None))
     )
-    return value if isinstance(value, str) else None
 
 
 def feedback_annotations(values: Mapping[str, Any]) -> Any:
@@ -193,7 +188,7 @@ def install_v2_observer(
     *,
     tool_manager: Any | None,
     make_scope: Callable[[], ServerScope],
-    on_initialized: Callable[[ServerScope, str | None], None],
+    on_initialized: Callable[[ServerScope], None],
     on_ended: Callable[[ServerScope, float], None],
     on_listed: Callable[[dict[str, Any]], None] | None,
     on_called: Callable[[dict[str, Any]], None] | None,
@@ -250,22 +245,15 @@ def install_v2_observer(
                 return await observe_tools_list(lambda: call_next(ctx), on_listed)
             result = await call_next(ctx)
             if ctx.method == "initialize":
-                if scope.ctx is not None:
-                    info = params.get("clientInfo")
-                    if isinstance(info, Mapping):
-                        existing = scope.ctx.client or McpClientInfo()
-                        scope.ctx.client = replace(
-                            existing,
-                            name=info.get("name") or existing.name,
-                            version=info.get("version") or existing.version,
-                        )
-                    scope.ctx.protocol_version = (
-                        result.get("protocolVersion") if isinstance(result, dict) else None
-                    )
                 try:
-                    on_initialized(
-                        scope, scope.ctx.protocol_version if scope.ctx is not None else None,
-                    )
+                    if scope.ctx is not None:
+                        record_handshake(
+                            scope.ctx,
+                            params.get("clientInfo"),
+                            client_string(result.get("protocolVersion"))
+                            if isinstance(result, Mapping) else None,
+                        )
+                    on_initialized(scope)
                 except Exception:
                     pass
             return result

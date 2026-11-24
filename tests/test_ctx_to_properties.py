@@ -45,12 +45,14 @@ class TestCtxToAmplitudeFields:
             {
                 "session_id": "no-session",
                 "client_name": "unknown",
-                "user_agent": "unknown",
+                "client_name_source": "none",
+                "client_family_source": "none",
                 "server_name": "my-server",
                 "transport": "stdio",
                 "anchor_type": "anonymous",
             },
         )
+        assert "user_agent" not in mapped.event_properties
         assert mapped.user_id is None
         assert mapped.device_id is None
         assert mapped.groups is None

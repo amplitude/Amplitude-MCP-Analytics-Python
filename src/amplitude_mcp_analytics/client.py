@@ -11,9 +11,11 @@ from __future__ import annotations
 import time
 import weakref
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from .config import MCPAnalyticsConfig
+from .context.client_attribution import explicit_name_source
 from .context.factory import create_server_context
 from .context.types import (
     ClientInfoResolver,
@@ -624,6 +626,7 @@ class AmplitudeMCPAnalytics:
                 version=client.get("version"),
                 user_agent=client.get("user_agent"),
                 oauth_client_id=client.get("oauth_client_id"),
+                name_source=explicit_name_source(client.get("name_source")),
             )
         else:
             bound_client = client
@@ -633,16 +636,7 @@ class AmplitudeMCPAnalytics:
                 server=McpServerInfo(name=self.server_name, version=self.server_version),
                 transport=transport if transport is not None else "stdio",
                 auth_type=auth_type,
-                client=(
-                    McpClientInfo(
-                        name=bound_client.name,
-                        version=bound_client.version,
-                        user_agent=bound_client.user_agent,
-                        oauth_client_id=bound_client.oauth_client_id,
-                    )
-                    if bound_client is not None
-                    else None
-                ),
+                client=replace(bound_client) if bound_client is not None else None,
                 protocol_version=protocol_version,
                 anchor=bound_anchor,
                 extra=extra,
@@ -661,11 +655,14 @@ class AmplitudeMCPAnalytics:
             self._client_info_resolver = resolve_client_info
             return scope
 
-        def resolved_request_ctx(scope: ServerScope) -> McpServerContext | None:
+        def resolved_request_ctx(
+            scope: ServerScope, request_context: Any | None = None,
+        ) -> McpServerContext | None:
             if scope.ctx is None:
                 return None
             return build_server_context(
                 scope.ctx,
+                request_context=request_context,
                 scope_session_id=scope.captured_session_id,
                 resolve_identity=scope.identity_resolver,
                 server_identity=scope.identity,
@@ -800,24 +797,17 @@ class AmplitudeMCPAnalytics:
             if self.config.autocapture.tool_calls:
                 install_tool_call_hook(low_level, on_tool_call_settled)
 
-        def on_initialized(
-            scope: ServerScope, negotiated_protocol_version: str | None = None,
-        ) -> None:
-            # `[MCP] Session Initialized` — the handshake only fires on the
-            # successful initialize request, including sessionless Streamable
-            # HTTP. Resolve the floored
-            # server ctx into its connection form (real anchor/identity) once,
-            # in place; per-request builds still override these per call. The
-            # handshake clientInfo was already captured by the stream observer.
-            if not self.config.autocapture.session_lifecycle:
+        def on_initialized(scope: ServerScope, request_context: Any | None = None) -> None:
+            if not self.config.autocapture.session_lifecycle or scope.ctx is None:
                 return
-            ctx = resolved_request_ctx(scope)
+            ctx = resolved_request_ctx(scope, request_context)
             if ctx is None:
                 return
-            if negotiated_protocol_version is not None:
-                ctx.protocol_version = negotiated_protocol_version
-            scope.ctx = ctx
-            self._server_ctx = ctx
+            # Retain only connection-level client and protocol signals for later requests.
+            scope.ctx = replace(
+                ctx, client=scope.ctx.client, protocol_version=scope.ctx.protocol_version,
+            )
+            self._server_ctx = scope.ctx
             scope.session_start = time.perf_counter()
             emit_session_initialized(self._amplitude, ctx, self._privacy)
 

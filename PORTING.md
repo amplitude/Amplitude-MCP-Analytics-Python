@@ -10,6 +10,11 @@ taxonomy, and the anchor-derived identity math (`uuid5` over the
 anchor produces the same `device_id` from either SDK and dashboards can slice
 both without special-casing.
 
+Both SDKs emit raw-name and family-detection provenance by default and use the
+same [client attribution rules](./docs/events.md#client-identity). Missing User
+Agent values are omitted. Request protocol metadata takes precedence over the
+successful handshake response on the same connection.
+
 > **Namespace note.** Through 0.1.x both SDKs derived device ids under
 > `6ba7b812-9dad-11d1-80b4-00c04fd430c8`. That is not a private namespace: it
 > is `NameSpace_OID`, one of the four namespace UUIDs reserved by RFC 9562

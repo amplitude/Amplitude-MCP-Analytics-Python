@@ -436,11 +436,13 @@ def test_namespaced_meta_client_info_and_protocol_version_are_preferred() -> Non
     with request_frame(request_context(http_request(headers={}), meta=meta)):
         resolved = build_server_context(base)
 
-    assert resolved.client == McpClientInfo(name="namespaced", version="2")
+    assert resolved.client == McpClientInfo(
+        name="namespaced", version="2", name_source="request-metadata"
+    )
     assert resolved.protocol_version == "2026-07-28"
 
 
-def test_client_info_resolver_wins_by_field_and_oauth_id_is_separate() -> None:
+def test_client_info_resolver_wins_as_a_pair_and_oauth_id_is_separate() -> None:
     base = server_ctx(
         transport="streamable-http",
         client=McpClientInfo(name="handshake", version="1"),
@@ -467,9 +469,25 @@ def test_client_info_resolver_wins_by_field_and_oauth_id_is_separate() -> None:
 
     assert resolved.client == McpClientInfo(
         name="resolved",
-        version="1",
         user_agent="ua",
         oauth_client_id="registration-123",
+        name_source="host",
+    )
+
+
+def test_skips_malformed_client_metadata_without_mixing_version() -> None:
+    base = server_ctx(
+        transport="streamable-http",
+        client=McpClientInfo(name="claude-code", version="2.1.311", name_source="handshake"),
+    )
+    meta = {
+        "io.modelcontextprotocol/clientInfo": {"name": ["spoof"], "version": "wrong-version"},
+        "clientInfo": {"name": "cursor-vscode", "version": "  "},
+    }
+    resolved = build_server_context(base, request_context=request_context(meta=meta))
+
+    assert resolved.client == McpClientInfo(
+        name="cursor-vscode", name_source="request-metadata"
     )
 
 

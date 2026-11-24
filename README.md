@@ -153,7 +153,19 @@ not emit `[MCP] Session Ended`: a duration for a transport that lives for one
 request is not meaningful. Every event also carries the shared context
 properties (identity, client/server, transport, trace correlation).
 
-### Client name on sessionless servers
+### Client attribution
+
+Events report how the SDK obtained the raw client name and which signal
+identified the client family. Recognized names and branded User-Agents can
+identify a family on both stateful and stateless transports. The SDK adds a
+surface only when the signal identifies one.
+
+The protocol version comes from request metadata when available, then from
+the successful handshake on that connection. Events omit `[MCP] User Agent`
+when no value is available, including typical stdio events. If a chart filters
+for `[MCP] User Agent = unknown`, include missing values to cover new events.
+
+#### Client name on sessionless servers
 
 Through protocol `2025-11-25`, `clientInfo` appears only on `initialize`. A
 host that creates a fresh server for every HTTP request therefore cannot read
@@ -166,16 +178,21 @@ from amplitude_mcp_analytics import McpClientInfo
 analytics.instrument_server(
     mcp,
     resolve_client_info=lambda request: McpClientInfo(
-        name=(request.auth_info or {}).get("client_name")
+        name=(request.auth_info or {}).get("client_name"),
+        name_source="oauth",
     ),
 )
 ```
 
-The callback wins over wire-derived sources and may return only the fields it
-knows; returning `None`, empty fields, or raising falls through safely. The SDK
+The callback wins over wire-derived sources when it supplies a name. The SDK
+uses the version from the same source. Returning `None` or raising falls
+through to the available wire signals. The SDK
 also emits `[MCP] OAuth Client ID` from the request's verified `client_id`.
 That value identifies a registration rather than a product, so it is never
 folded into `[MCP] Client Name`.
+
+See [Client identity](./docs/events.md#client-identity) for the source values
+and detection rules.
 
 ## Identity
 

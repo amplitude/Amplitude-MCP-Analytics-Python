@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+import httpx
 import pytest
 import uvicorn
 from mcp.types import Implementation
@@ -68,11 +69,19 @@ async def test_stdio_transport_and_lifecycle(tmp_path: Path) -> None:
     assert sum(e["event_type"] == ENDED for e in events) == 1
     assert sum(e["event_type"] == RESPONSE for e in events) == 1
     assert any(e["event_type"] == "[MCP] Tools Listed" for e in events)
+    negotiated = next(
+        e["event_properties"]["[MCP] Protocol Version"]
+        for e in events if e["event_type"] == INITIALIZED
+    )
+    assert negotiated.startswith("20")
     for event in events:
         props = event["event_properties"]
         assert props["[MCP] Transport"] == "stdio"
         assert props["[MCP] Anchor Type"] == "process"
         assert event["user_id"].startswith("process:")
+        assert props["[MCP] Protocol Version"] == negotiated
+        assert props["[MCP] Client Name Source"] == "handshake"
+        assert "[MCP] User Agent" not in props
 
 
 @asynccontextmanager
@@ -176,6 +185,9 @@ async def test_streamable_http_transport_and_client_isolation(mode: str) -> None
     for event in responses:
         props = event["event_properties"]
         assert props["[MCP] Client Name"] == props["[MCP] Rationale"]
+        assert props["[MCP] Client Name Source"] == (
+            "handshake" if mode == "legacy" else "request-metadata"
+        )
         if mode != "legacy":
             assert props["[MCP] Protocol Version"] == "2026-07-28"
         elif V2:
@@ -190,3 +202,104 @@ async def test_streamable_http_transport_and_client_isolation(mode: str) -> None
         assert len(analytics.get_events(INITIALIZED)) == 2
     else:
         assert not analytics.get_events(INITIALIZED)
+
+
+@pytest.mark.skipif(V2, reason="Exercises the mcp 1.x legacy HTTP adapter")
+@pytest.mark.parametrize("stateless", [False, True], ids=["stateful", "fresh-per-request"])
+async def test_legacy_http_uses_negotiated_version_when_request_omits_it(stateless: bool) -> None:
+    from mcp.server.fastmcp import FastMCP
+
+    server = FastMCP("http-compat", json_response=True, stateless_http=stateless)
+    analytics = MockAmplitudeMCPAnalytics(server_name="http-compat", server_version="1")
+    analytics.instrument_server(server, user_id="http-user")
+
+    @server.tool()
+    @analytics.instrument_tool(name="echo")
+    async def echo(label: str) -> str:
+        return label
+
+    async with http_server(server.streamable_http_app()) as url, httpx.AsyncClient(
+        headers={
+            "accept": "application/json, text/event-stream",
+            "user-agent": "claude-code/2.1.311 (sdk-cli)",
+        }
+    ) as client:
+        async def post(**message: Any) -> httpx.Response:
+            return await client.post(url, json={"jsonrpc": "2.0", **message})
+
+        if stateless:
+            rejected = await post(
+                id=0, method="initialize", params={
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "rejected-client"},
+                },
+            )
+            assert "error" in rejected.json()
+            assert not analytics.get_events(INITIALIZED)
+
+        initialized = await post(
+            id=1, method="initialize", params={
+                "protocolVersion": "1900-01-01", "capabilities": {},
+                "clientInfo": {"name": "cursor-vscode", "version": "1.0.0"},
+            },
+        )
+        initialized.raise_for_status()
+        negotiated = initialized.json()["result"]["protocolVersion"]
+        assert negotiated != "1900-01-01"
+        session_id = initialized.headers.get("mcp-session-id")
+        if session_id:
+            client.headers["mcp-session-id"] = session_id
+        assert (await post(method="notifications/initialized")).status_code == 202
+        call = await post(
+            id=2, method="tools/call", params={"name": "echo", "arguments": {"label": "hello"}},
+        )
+        assert call.json()["result"]["content"][0]["text"] == "hello"
+
+        if not stateless:
+            await post(
+                id=3, method="tools/call", params={
+                    "name": "echo", "arguments": {"label": "override"},
+                    "_meta": {
+                        "io.modelcontextprotocol/clientInfo": {"name": "openai-mcp"},
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    },
+                },
+            )
+            await post(
+                id=4, method="tools/call",
+                params={"name": "echo", "arguments": {"label": "after-override"}},
+            )
+
+    init = analytics.get_events(INITIALIZED)[0]["event_properties"]
+    assert init["[MCP] Protocol Version"] == negotiated
+    assert init["[MCP] Client Family"] == "cursor"
+    assert init["[MCP] Client Surface"] == "vscode"
+    assert init["[MCP] Client Name Source"] == "handshake"
+    assert init["[MCP] Client Family Source"] == "client-name"
+    props = analytics.get_events(RESPONSE)[0]["event_properties"]
+    if stateless:
+        assert "[MCP] Protocol Version" not in props
+        assert props["[MCP] Client Name"] == "unknown"
+        assert props["[MCP] Client Name Source"] == "none"
+        assert props["[MCP] Client Family"] == "claude-code"
+        assert props["[MCP] Client Surface"] == "cli"
+        assert props["[MCP] Client Family Source"] == "user-agent"
+        assert not analytics.get_events(ENDED)
+    else:
+        assert props["[MCP] Protocol Version"] == negotiated
+        assert props["[MCP] Client Name Source"] == "handshake"
+        assert props["[MCP] Client Family"] == "cursor"
+        ended = analytics.get_events(ENDED)[0]["event_properties"]
+        assert ended["[MCP] Protocol Version"] == negotiated
+        assert "[MCP] User Agent" not in ended
+
+        _, overridden, later = [
+            event["event_properties"] for event in analytics.get_events(RESPONSE)
+        ]
+        assert overridden["[MCP] Client Name Source"] == "request-metadata"
+        assert overridden["[MCP] Client Family"] == "chatgpt"
+        assert "[MCP] Client Version" not in overridden
+        assert overridden["[MCP] Protocol Version"] == "2026-07-28"
+        assert later["[MCP] Client Name Source"] == "handshake"
+        assert later["[MCP] Client Family"] == "cursor"
+        assert later["[MCP] Protocol Version"] == negotiated
